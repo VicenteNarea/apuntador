@@ -8,6 +8,7 @@ muestra una respuesta sugerida en una ventana flotante, usando tus documentos.
 """
 import os
 import re
+import sys
 import csv
 import json
 import time
@@ -20,6 +21,8 @@ from math import gcd
 from pathlib import Path
 
 import numpy as np
+
+from servidor_web import Difusor, ServidorWeb, leer_token
 
 try:
     import tkinter as tk
@@ -68,6 +71,11 @@ GUARDAR_TRANSCRIPCION = False      # guarda en ./transcripciones/
 HOTKEY_RESPONDER = "ctrl+alt+r"    # fuerza respuesta a lo último dicho
 HOTKEY_PAUSA = "ctrl+alt+p"
 OPACIDAD = 0.94
+
+# Panel web (ver y controlar desde la tablet o el celular)
+WEB_ACTIVO = True                  # http://IP-del-PC:WEB_PUERTO en la misma red wifi
+WEB_PUERTO = 8765
+WEB_TUNEL = False                  # True = enlace público con Cloudflare (o usa iniciar_compartido.bat)
 # ═════════════════════════════════════════════════════════════════════
 
 SISTEMA = """Eres el apuntador silencioso de una persona que está en una reunión en vivo.
@@ -606,7 +614,7 @@ class Respondedor(threading.Thread):
 class App:
     def __init__(self, capturar: bool = True):
         self.capturar = capturar  # False = sin loopback (simulador / tests)
-        self.ui_q, self.audio_q, self.frase_q = queue.Queue(), queue.Queue(), queue.Queue()
+        self.ui_q, self.audio_q, self.frase_q = Difusor(), queue.Queue(), queue.Queue()
         self.pausado = False
         self.auto = RESPONDER_AUTOMATICO
         self.historial = deque(maxlen=LINEAS_HISTORIAL)
@@ -618,6 +626,9 @@ class App:
         self.segmentador = Segmentador(self)
         self.log = None
         self.listo = threading.Event()
+        self.web = None
+        self.enlaces = []
+        self.ui_q.put(("auto", self.auto))
         if GUARDAR_TRANSCRIPCION:
             (BASE / "transcripciones").mkdir(exist_ok=True)
             self.log = BASE / "transcripciones" / f"{datetime.now():%Y-%m-%d_%H%M}.txt"
@@ -647,6 +658,37 @@ class App:
     def alternar_pausa(self):
         self.pausado = not self.pausado
         self.ui_q.put(("pausa", self.pausado))
+
+    def fijar_auto(self, valor: bool):
+        self.auto = bool(valor)
+        self.ui_q.put(("auto", self.auto))
+
+    def limpiar(self):
+        self.ui_q.put(("limpiar",))
+
+    def _enlace(self, texto):
+        try:
+            print(texto)
+        except Exception:
+            pass
+        self.enlaces.append(texto)
+        self.ui_q.put(("web", "\n".join(self.enlaces)))
+
+    def _iniciar_web(self, tunel: bool):
+        try:
+            self.web = ServidorWeb(self, WEB_PUERTO, leer_token(BASE), BASE)
+            self.web.iniciar()
+        except Exception as e:
+            self._enlace(f"Panel web desactivado: {e}")
+            return
+        self._enlace(f"Tablet (misma red): {self.web.url_local()}")
+        if tunel:
+            self._enlace("Internet: abriendo túnel de Cloudflare…")
+
+            def listo(url, error):
+                self.enlaces.pop()
+                self._enlace(f"Internet: {url}" if url else f"Internet: {error}")
+            self.web.iniciar_tunel(listo)
 
     def _leer_contexto(self):
         try:
@@ -683,7 +725,9 @@ class App:
         except Exception as e:
             self.estado(f"Error al iniciar: {e}")
 
-    def iniciar(self, hotkeys: bool = True):
+    def iniciar(self, hotkeys: bool = True, web: bool = False, tunel: bool = False):
+        if web:
+            self._iniciar_web(tunel)
         self.segmentador.start()
         self.respondedor.start()
         threading.Thread(target=self._arranque, daemon=True).start()
@@ -699,6 +743,8 @@ class App:
     def cerrar(self):
         if self.captura:
             self.captura.detener()
+        if self.web:
+            self.web.cerrar()
 
 
 # ─────────────────────────── interfaz ───────────────────────────
@@ -724,6 +770,9 @@ class Interfaz:
         self.lbl_estado.pack(fill="x")
         self.lbl_lat = tk.Label(cab, text="", fg=self.OK, bg=self.BG, anchor="w", font=("Consolas", 9))
         self.lbl_lat.pack(fill="x")
+        self.lbl_web = tk.Label(cab, text="", fg=self.TENUE, bg=self.BG, anchor="w", justify="left",
+                                wraplength=460, font=("Consolas", 8))
+        self.lbl_web.pack(fill="x")
 
         self._titulo("TRANSCRIPCIÓN")
         self.t_trans = self._texto(8, ("Segoe UI", 10), self.TENUE)
@@ -741,12 +790,12 @@ class Interfaz:
         bot.pack(fill="x", padx=10, pady=8)
         self.btn_pausa = self._boton(bot, "Pausar", self.app.alternar_pausa)
         self._boton(bot, "Responder", lambda: self.app.pedir_respuesta())
-        self._boton(bot, "Limpiar", self.limpiar)
+        self._boton(bot, "Limpiar", self.app.limpiar)
         self._boton(bot, "Recargar docs", self.app.recargar_docs)
         self.var_auto = tk.BooleanVar(value=app.auto)
         tk.Checkbutton(bot, text="Auto", variable=self.var_auto, bg=self.BG, fg=self.TXT,
                        selectcolor=self.PANEL, activebackground=self.BG, activeforeground=self.TXT,
-                       command=lambda: setattr(app, "auto", self.var_auto.get())).pack(side="right")
+                       command=lambda: app.fijar_auto(self.var_auto.get())).pack(side="right")
 
         r.protocol("WM_DELETE_WINDOW", self.cerrar)
         r.after(40, self._poll)
@@ -825,6 +874,12 @@ class Interfaz:
                 elif tipo == "pausa":
                     self.btn_pausa.configure(text="Reanudar" if ev[1] else "Pausar")
                     self.lbl_estado.configure(text="⏸ En pausa" if ev[1] else "Escuchando")
+                elif tipo == "auto":
+                    self.var_auto.set(ev[1])
+                elif tipo == "limpiar":
+                    self.limpiar()
+                elif tipo == "web":
+                    self.lbl_web.configure(text=ev[1])
         except queue.Empty:
             pass
         self.root.after(40, self._poll)
@@ -838,7 +893,7 @@ class Interfaz:
 def main():
     app = App()
     ui = Interfaz(app)
-    app.iniciar()
+    app.iniciar(web=WEB_ACTIVO or "--tunel" in sys.argv, tunel=WEB_TUNEL or "--tunel" in sys.argv)
     ui.root.mainloop()
 
 

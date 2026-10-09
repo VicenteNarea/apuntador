@@ -27,6 +27,14 @@ Escucha lo que suena en tu PC (la voz de los demás en Meet, Teams o Zoom), lo t
 
 Las preguntas detectadas aparecen en amarillo. Arriba se muestra la latencia real (STT y tiempo hasta la primera palabra).
 
+## Ver y controlar desde la tablet
+Al abrir el Apuntador se levanta un panel web con lo mismo que la ventana: transcripción, sugerencia local, sugerencia de OpenAI y los botones. Los enlaces aparecen arriba en la ventana (y en la consola).
+
+- **Misma red wifi:** abre en la tablet el enlace `Tablet (misma red): http://192.168.x.x:8765/?t=CLAVE`. La primera vez Windows pregunta si permite a Python en la red: acepta **Redes privadas**.
+- **Fuera de tu red (internet):** usa `iniciar_compartido.bat` en vez de `iniciar.bat`. Instala `cloudflared` la primera vez y muestra un enlace `https://….trycloudflare.com/?t=CLAVE`. El enlace cambia cada vez que se abre.
+- La **clave** está en `.web_token` (se crea sola). Bórrala para generar otra o fíjala con la variable `APUNTADOR_TOKEN`. Sin clave el panel no muestra nada.
+- Para desactivar el panel: `WEB_ACTIVO = False` en `asistente_llamadas.py`. Puerto: `WEB_PUERTO`.
+
 ## Latencia esperada (RTX 3060 Ti)
 | Etapa | Tiempo |
 |---|---|
