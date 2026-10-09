@@ -712,7 +712,7 @@ class Interfaz:
         self.lat = {"stt": None, "llm": None}
         r = self.root = tk.Tk()
         r.title("Apuntador")
-        r.geometry("480x620+30+30")
+        r.geometry("480x800+30+30")
         r.configure(bg=self.BG)
         r.attributes("-topmost", True)
         r.attributes("-alpha", OPACIDAD)
@@ -728,11 +728,14 @@ class Interfaz:
         self._titulo("TRANSCRIPCIÓN")
         self.t_trans = self._texto(8, ("Segoe UI", 10), self.TENUE)
         self.t_trans.tag_configure("preg", foreground=self.PREG)
-        self._titulo("SUGERENCIA")
-        self.t_resp = self._texto(12, ("Segoe UI", 13), self.TXT, expand=True)
-        self.t_resp.tag_configure("preg", foreground=self.PREG, font=("Segoe UI", 10, "italic"))
-        self.t_resp.tag_configure("fuente", foreground=self.TENUE, font=("Segoe UI", 8))
-        self.t_resp.tag_configure("aviso", foreground="#ff9e64", font=("Segoe UI", 10, "bold"))
+        self._titulo(f"SUGERENCIA · LOCAL ({LLM_MODEL})")
+        self.t_resp = self._texto(9, ("Segoe UI", 13), self.TXT, expand=True)
+        self._titulo(f"SUGERENCIA · OPENAI ({OPENAI_MODELO})")
+        self.t_resp2 = self._texto(9, ("Segoe UI", 13), self.TXT, expand=True)
+        for t in (self.t_resp, self.t_resp2):
+            t.tag_configure("preg", foreground=self.PREG, font=("Segoe UI", 10, "italic"))
+            t.tag_configure("fuente", foreground=self.TENUE, font=("Segoe UI", 8))
+            t.tag_configure("aviso", foreground="#ff9e64", font=("Segoe UI", 10, "bold"))
 
         bot = tk.Frame(r, bg=self.BG)
         bot.pack(fill="x", padx=10, pady=8)
@@ -775,7 +778,7 @@ class Interfaz:
         t.configure(state="disabled")
 
     def limpiar(self):
-        for t in (self.t_trans, self.t_resp):
+        for t in (self.t_trans, self.t_resp, self.t_resp2):
             t.configure(state="normal")
             t.delete("1.0", "end")
             t.configure(state="disabled")
@@ -799,25 +802,20 @@ class Interfaz:
                     self._agregar(self.t_trans, ev[1] + "\n", "preg" if ev[2] else None)
                 elif tipo == "resp_inicio":
                     self.fuentes = ev[2]
-                    self.t_resp.configure(state="normal")
-                    self.t_resp.delete("1.0", "end")
-                    self.t_resp.configure(state="disabled")
-                    self._agregar(self.t_resp, f"↳ {ev[1]}\n\n", "preg")
-                    if not self.fuentes:
-                        self._agregar(self.t_resp, "⚠ Sin respaldo en tus documentos — respuesta improvisada\n\n", "aviso")
-                    self._agregar(self.t_resp, f"🖥 Local ({LLM_MODEL})\n", "fuente")
-                    self.t_resp.mark_set("fin_local", "end-1c")
-                    self.t_resp.mark_gravity("fin_local", "left")   # el encabezado OpenAI queda después
-                    self._agregar(self.t_resp, f"\n\n☁ OpenAI ({OPENAI_MODELO})\n", "fuente")
-                    self.t_resp.mark_gravity("fin_local", "right")  # los tokens locales avanzan la marca
+                    for t in (self.t_resp, self.t_resp2):
+                        t.configure(state="normal")
+                        t.delete("1.0", "end")
+                        t.configure(state="disabled")
+                        self._agregar(t, f"↳ {ev[1]}\n\n", "preg")
+                        if not self.fuentes:
+                            self._agregar(t, "⚠ Sin respaldo en tus documentos — respuesta improvisada\n\n", "aviso")
                 elif tipo == "tok":
-                    self.t_resp.configure(state="normal")
-                    self.t_resp.insert("fin_local", ev[1])
-                    self.t_resp.configure(state="disabled")
-                elif tipo == "tok2":
                     self._agregar(self.t_resp, ev[1])
+                elif tipo == "tok2":
+                    self._agregar(self.t_resp2, ev[1])
                 elif tipo == "resp_fin" and self.fuentes:
-                    self._agregar(self.t_resp, "\n\nFuentes: " + ", ".join(self.fuentes), "fuente")
+                    for t in (self.t_resp, self.t_resp2):
+                        self._agregar(t, "\n\nFuentes: " + ", ".join(self.fuentes), "fuente")
                 elif tipo == "lat_stt":
                     self.lat["stt"] = ev[1]
                     self._pintar_lat()
