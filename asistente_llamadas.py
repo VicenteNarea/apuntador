@@ -97,8 +97,11 @@ Te llega lo que le acaban de preguntar y debes darle lo que necesita para respon
 
 Reglas:
 - Español. Máximo 3 viñetas cortas (≤ 20 palabras cada una). La primera es la respuesta directa.
-- Si te llegan VARIAS preguntas, responde TODAS, en el mismo orden y en bloques separados:
-  una línea "1) <tema en ≤ 5 palabras>" y debajo 1–2 viñetas. No omitas ninguna.
+- Si te hacen VARIAS preguntas (aunque vengan en una sola frase), respóndelas todas y en orden.
+  Para cada una: una línea con el número y el tema (por ejemplo «1) Costo del proyecto») y debajo
+  1–2 viñetas con la respuesta. Termina cada bloque antes de empezar el siguiente.
+  Nunca escribas un esquema primero ni dejes viñetas vacías.
+- Texto plano: viñetas con «•», sin negritas (**), sin títulos (#) y sin separadores (---).
 - Usa primero los DOCUMENTOS y el CONTEXTO PERSONAL; da cifras, fechas y nombres exactos cuando existan.
 - Si la pregunta trae una premisa equivocada (p. ej., confunde qué opción se eligió), corrígela en la primera viñeta.
 - Si los documentos no responden la pregunta, empieza con "⚠" y propone una respuesta prudente
@@ -139,6 +142,18 @@ def es_pregunta(texto: str) -> bool:
     if len(n.split()) < 3:
         return False
     return any(n.startswith(w + " ") for w in _INTERROG) or any(p in n for p in _PEDIDOS)
+
+
+class LimpiaMarkdown:
+    """Quita las negritas (**) del texto que llega por pedazos, aunque un '**' venga partido."""
+    def __init__(self):
+        self.pendiente = ""
+
+    def __call__(self, tok: str) -> str:
+        t, self.pendiente = self.pendiente + tok, ""
+        if t.endswith("*") and not t.endswith("**"):
+            t, self.pendiente = t[:-1], "*"
+        return t.replace("**", "")
 
 
 def dividir_preguntas(texto: str) -> list[str]:
@@ -603,6 +618,7 @@ class Respondedor(threading.Thread):
                        "max_completion_tokens": max_tokens + (0 if OPENAI_ESFUERZO in (None, "none") else 2000)}
             if OPENAI_ESFUERZO:
                 payload["reasoning_effort"] = OPENAI_ESFUERZO
+            limpiar = LimpiaMarkdown()
             with requests.post(OPENAI_URL, json=payload, stream=True, timeout=(10, 120),
                                headers={"Authorization": f"Bearer {clave}"}) as r:
                 if not r.ok:
@@ -616,7 +632,7 @@ class Respondedor(threading.Thread):
                     if dato == b"[DONE]":
                         break
                     for ch in json.loads(dato).get("choices", []):
-                        tok = (ch.get("delta") or {}).get("content") or ""
+                        tok = limpiar((ch.get("delta") or {}).get("content") or "")
                         if tok:
                             self.app.ui_q.put(("tok2", tok))
         except Exception as e:
@@ -640,6 +656,7 @@ class Respondedor(threading.Thread):
                    "options": {"temperature": LLM_TEMPERATURA, "num_ctx": LLM_NUM_CTX,
                                "num_predict": max_tokens}}
         primero = True
+        limpiar = LimpiaMarkdown()
         with requests.post(OLLAMA_URL, json=payload, stream=True, timeout=(3, 120)) as r:
             r.raise_for_status()
             for linea in r.iter_lines():
@@ -648,7 +665,7 @@ class Respondedor(threading.Thread):
                 if not linea:
                     continue
                 d = json.loads(linea)
-                tok = d.get("message", {}).get("content", "")
+                tok = limpiar(d.get("message", {}).get("content", ""))
                 if tok:
                     if primero:
                         self.app.ui_q.put(("lat_llm", (time.perf_counter() - t_ref) * 1000))

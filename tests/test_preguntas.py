@@ -139,3 +139,24 @@ def test_sin_auto_no_continua(app):
     _frase(app, "¿Cómo puede afirmar que MLP", 10.0, 2.0)
     _frase(app, "es mejor", 11.5, 1.2)
     assert app.pedidos == []
+
+
+# ─────────────── respuestas sin Markdown ───────────────
+@pytest.mark.parametrize("pedazos", [
+    ["- ", "**", "MLP", "**", ": red neuronal"],
+    ["- *", "*MLP*", "*: red neuronal"],          # el '**' llega partido
+    ["- **MLP**: red neuronal"],
+])
+def test_limpia_markdown(pedazos):
+    limpiar = A.LimpiaMarkdown()
+    assert "".join(limpiar(p) for p in pedazos) == "- MLP: red neuronal"
+
+
+def test_vineta_con_asterisco_se_conserva():
+    limpiar = A.LimpiaMarkdown()
+    assert "".join(limpiar(p) for p in ["*", " uno"]) == "* uno"
+
+
+def test_instrucciones_no_son_plantilla():
+    # el modelo local copiaba "1) <tema>" con viñetas vacías: la regla no debe traer marcadores para rellenar
+    assert "<tema" not in A.SISTEMA and "esquema" in A.SISTEMA and "**" in A.SISTEMA
