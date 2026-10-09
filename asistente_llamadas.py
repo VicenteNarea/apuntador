@@ -55,6 +55,7 @@ OPENAI_ESFUERZO = "none"           # reasoning_effort; None para no enviarlo
 # Conocimiento propio
 DOCS_DIR = BASE / "docs"           # PDF, DOCX, XLSX, CSV, TXT, MD
 CONTEXTO_FILE = BASE / "contexto.txt"
+ENLACES_FILE = BASE / "enlaces.txt"   # enlaces del panel web y clave (se reescribe al iniciar)
 FRAGMENTOS_POR_PREGUNTA = 4
 
 # Detección de frases (latencia ↔ precisión)
@@ -676,6 +677,10 @@ class App:
             pass
         self.enlaces.append(texto)
         self.ui_q.put(("web", "\n".join(self.enlaces)))
+        try:
+            ENLACES_FILE.write_text("\n".join(self.enlaces) + "\n", encoding="utf-8")
+        except OSError:
+            pass
 
     def _iniciar_web(self, tunel: bool):
         try:
@@ -913,18 +918,70 @@ def _servicio(app: App):
         app.cerrar()
 
 
+def _bandeja(app: App):
+    """Modo servicio oculto: sin consola ni ventana, solo un ícono en la bandeja del sistema."""
+    try:
+        import pystray
+        from PIL import Image, ImageDraw
+    except ImportError:
+        print("pystray/Pillow no instalados: el servicio corre oculto y sin ícono. Detenlo desde el "
+              "Administrador de tareas (pythonw.exe).")
+        while True:
+            app.ui_q.get()
+
+    import webbrowser
+    img = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
+    dib = ImageDraw.Draw(img)
+    dib.ellipse((4, 4, 60, 60), fill="#7ee2a8")
+    dib.ellipse((22, 22, 42, 42), fill="#111418")
+
+    def abrir_panel(icono, item):
+        if app.web:
+            webbrowser.open(f"http://127.0.0.1:{WEB_PUERTO}/?t={app.web.token}")
+
+    def ver_enlaces(icono, item):
+        if ENLACES_FILE.exists():
+            os.startfile(ENLACES_FILE)
+
+    icono = pystray.Icon("apuntador", img, "Apuntador · iniciando…", pystray.Menu(
+        pystray.MenuItem("Abrir panel", abrir_panel, default=True),
+        pystray.MenuItem("Ver enlaces y clave", ver_enlaces),
+        pystray.MenuItem("Pausar / reanudar", lambda i, it: app.alternar_pausa()),
+        pystray.Menu.SEPARATOR,
+        pystray.MenuItem("Salir", lambda i, it: i.stop())))
+
+    def drenar():
+        while True:
+            ev = app.ui_q.get()
+            if ev[0] == "estado":
+                icono.title = ("Apuntador · " + ev[1])[:120]
+                print(ev[1])
+    threading.Thread(target=drenar, daemon=True).start()
+    icono.run()  # bloquea hasta "Salir"
+
+
 def main():
     import argparse
     ap = argparse.ArgumentParser(description="Apuntador de llamadas")
     ap.add_argument("--modo", choices=("normal", "servicio", "doble"), default=MODO)
     ap.add_argument("--tunel", action="store_true", help="enlace público con Cloudflare (modos servicio y doble)")
+    ap.add_argument("--oculto", action="store_true",
+                    help="modo servicio sin consola: ícono en la bandeja y registro en servicio.log")
     args = ap.parse_args()
+    if args.oculto:  # con pythonw no hay consola: todo lo impreso va a servicio.log
+        sys.stdout = sys.stderr = open(BASE / "servicio.log", "w", encoding="utf-8", buffering=1)
     web = args.modo in ("servicio", "doble")
     tunel = web and (args.tunel or WEB_TUNEL)
 
     app = App()
     if args.modo == "servicio":
         app.iniciar(web=True, tunel=tunel)
+        if args.oculto:
+            try:
+                _bandeja(app)
+            finally:
+                app.cerrar()
+                os._exit(0)
         _servicio(app)
         return
     ui = Interfaz(app)

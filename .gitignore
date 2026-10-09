@@ -10,3 +10,5 @@ docs/*
 .env
 resultados_latencia/
 .web_token
+enlaces.txt
+servicio.log
