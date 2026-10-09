@@ -58,6 +58,11 @@ CONTEXTO_FILE = BASE / "contexto.txt"
 ENLACES_FILE = BASE / "enlaces.txt"   # enlace del panel web (se reescribe al iniciar)
 FRAGMENTOS_POR_PREGUNTA = 4
 
+# Varias preguntas a la vez
+MAX_PREGUNTAS = 4                  # máximo de preguntas que se responden juntas
+VENTANA_PREGUNTAS_S = 8            # una pregunta que llega a menos de esto de la anterior se suma a ella
+TOKENS_POR_PREGUNTA_EXTRA = 120    # tokens de respuesta adicionales por cada pregunta extra
+
 # Detección de frases (latencia ↔ precisión)
 SILENCIO_MS = 600                  # silencio que cierra una frase (bajar = más rápido, más cortes)
 MAX_FRASE_S = 20
@@ -86,6 +91,8 @@ Te llega lo que le acaban de preguntar y debes darle lo que necesita para respon
 
 Reglas:
 - Español. Máximo 3 viñetas cortas (≤ 20 palabras cada una). La primera es la respuesta directa.
+- Si te llegan VARIAS preguntas, responde TODAS, en el mismo orden y en bloques separados:
+  una línea "1) <tema en ≤ 5 palabras>" y debajo 1–2 viñetas. No omitas ninguna.
 - Usa primero los DOCUMENTOS y el CONTEXTO PERSONAL; da cifras, fechas y nombres exactos cuando existan.
 - Si la pregunta trae una premisa equivocada (p. ej., confunde qué opción se eligió), corrígela en la primera viñeta.
 - Si los documentos no responden la pregunta, empieza con "⚠" y propone una respuesta prudente
@@ -126,6 +133,14 @@ def es_pregunta(texto: str) -> bool:
     if len(n.split()) < 3:
         return False
     return any(n.startswith(w + " ") for w in _INTERROG) or any(p in n for p in _PEDIDOS)
+
+
+def dividir_preguntas(texto: str) -> list[str]:
+    """Separa una frase con varias preguntas ("¿A? ¿Y B?") en preguntas sueltas.
+    Si hay una sola (o ninguna clara), devuelve el texto completo para no perder contexto."""
+    partes = [p.strip() for p in re.split(r"(?<=[?!])\s*|(?<=\.)\s+", texto) if p and p.strip()]
+    preguntas = [p for p in partes if es_pregunta(p)]
+    return preguntas if len(preguntas) > 1 else [texto.strip()]
 
 
 _ALUCINACIONES = ("gracias por ver", "suscribete", "amara.org", "subtitulos realizados",
@@ -492,10 +507,14 @@ class Respondedor(threading.Thread):
         self.app = app
         self.q = queue.Queue()
         self.gen = 0
+        self.ocupado = False  # True mientras se genera una respuesta (o hay una pendiente)
 
-    def solicitar(self, pregunta, historial, t_ref):
+    def solicitar(self, preguntas, historial, t_ref):
+        if isinstance(preguntas, str):
+            preguntas = [preguntas]
         self.gen += 1
-        self.q.put((self.gen, pregunta, historial, t_ref))
+        self.ocupado = True
+        self.q.put((self.gen, list(preguntas), historial, t_ref))
 
     def calentar(self) -> bool:
         import requests
@@ -508,14 +527,26 @@ class Respondedor(threading.Thread):
         except Exception:
             return False
 
-    def _mensajes(self, pregunta, hist):
-        frag = self.app.kb.buscar(pregunta + " " + " ".join(hist[-2:]))
+    def _mensajes(self, preguntas, hist):
+        if len(preguntas) == 1:
+            frag = self.app.kb.buscar(preguntas[0] + " " + " ".join(hist[-2:]))
+            pedido = f"PREGUNTA QUE ME HICIERON:\n{preguntas[0]}"
+        else:  # buscar por separado para cada pregunta y unir sin repetir
+            frag, vistos = [], set()
+            for p in preguntas:
+                for f in self.app.kb.buscar(p, k=2):
+                    if f not in vistos:
+                        vistos.add(f)
+                        frag.append(f)
+            frag = frag[:6]  # que quepa en LLM_NUM_CTX
+            lista = "\n".join(f"{i}) {p}" for i, p in enumerate(preguntas, 1))
+            pedido = (f"ME HICIERON {len(preguntas)} PREGUNTAS (responde cada una, en este orden):\n{lista}")
         docs = "\n\n".join(f"[{i + 1}] ({f})\n{t}" for i, (f, t) in enumerate(frag)) or "(sin coincidencias)"
         conv = "\n".join(f"- {h}" for h in hist[-8:]) or "(vacía)"
         user = (f"CONTEXTO PERSONAL:\n{self.app.contexto or '(no definido)'}\n\n"
                 f"DOCUMENTOS RELEVANTES:\n{docs}\n\n"
                 f"CONVERSACIÓN RECIENTE:\n{conv}\n\n"
-                f"PREGUNTA QUE ME HICIERON:\n{pregunta}")
+                f"{pedido}")
         fuentes = sorted({f for f, _ in frag})
         return [{"role": "system", "content": SISTEMA}, {"role": "user", "content": user}], fuentes
 
@@ -532,7 +563,7 @@ class Respondedor(threading.Thread):
                         return linea.split("=", 1)[1].strip().strip('"').strip("'")
         return None
 
-    def _generar_openai(self, gen, mensajes):
+    def _generar_openai(self, gen, mensajes, max_tokens):
         import requests
         try:
             clave = self._clave_openai()
@@ -540,7 +571,7 @@ class Respondedor(threading.Thread):
                 self.app.ui_q.put(("tok2", "[Falta OPENAI_API_KEY en el entorno o en .env]"))
                 return
             payload = {"model": OPENAI_MODELO, "stream": True, "messages": mensajes,
-                       "max_completion_tokens": LLM_MAX_TOKENS + (0 if OPENAI_ESFUERZO in (None, "none") else 2000)}
+                       "max_completion_tokens": max_tokens + (0 if OPENAI_ESFUERZO in (None, "none") else 2000)}
             if OPENAI_ESFUERZO:
                 payload["reasoning_effort"] = OPENAI_ESFUERZO
             with requests.post(OPENAI_URL, json=payload, stream=True, timeout=(10, 120),
@@ -562,21 +593,23 @@ class Respondedor(threading.Thread):
         except Exception as e:
             self.app.ui_q.put(("tok2", f"\n[Error OpenAI: {e}]"))
 
-    def _generar(self, gen, pregunta, hist, t_ref):
-        mensajes, fuentes = self._mensajes(pregunta, hist)
-        self.app.ui_q.put(("resp_inicio", pregunta, fuentes))
-        hilo = threading.Thread(target=self._generar_openai, args=(gen, mensajes), daemon=True)
+    def _generar(self, gen, preguntas, hist, t_ref):
+        mensajes, fuentes = self._mensajes(preguntas, hist)
+        titulo = preguntas[0] if len(preguntas) == 1 else "\n".join(f"{i}) {p}" for i, p in enumerate(preguntas, 1))
+        self.app.ui_q.put(("resp_inicio", titulo, fuentes))
+        max_tokens = LLM_MAX_TOKENS + TOKENS_POR_PREGUNTA_EXTRA * (len(preguntas) - 1)
+        hilo = threading.Thread(target=self._generar_openai, args=(gen, mensajes, max_tokens), daemon=True)
         hilo.start()
         try:
-            self._generar_local(gen, mensajes, t_ref)
+            self._generar_local(gen, mensajes, t_ref, max_tokens)
         finally:
             hilo.join()
 
-    def _generar_local(self, gen, mensajes, t_ref):
+    def _generar_local(self, gen, mensajes, t_ref, max_tokens=LLM_MAX_TOKENS):
         import requests
         payload = {"model": LLM_MODEL, "stream": True, "keep_alive": "60m", "messages": mensajes,
                    "options": {"temperature": LLM_TEMPERATURA, "num_ctx": LLM_NUM_CTX,
-                               "num_predict": LLM_MAX_TOKENS}}
+                               "num_predict": max_tokens}}
         primero = True
         with requests.post(OLLAMA_URL, json=payload, stream=True, timeout=(3, 120)) as r:
             r.raise_for_status()
@@ -603,14 +636,16 @@ class Respondedor(threading.Thread):
                     item = self.q.get_nowait()  # quedarse solo con la más reciente
             except queue.Empty:
                 pass
-            gen, pregunta, hist, t_ref = item
+            gen, preguntas, hist, t_ref = item
             if gen != self.gen:
                 continue
             try:
-                self._generar(gen, pregunta, hist, t_ref)
+                self._generar(gen, preguntas, hist, t_ref)
             except Exception as e:
                 self.app.ui_q.put(("tok", f"\n[Error LLM: {e}. ¿Está Ollama abierto?]"))
             self.app.ui_q.put(("resp_fin",))
+            if gen == self.gen and self.q.empty():
+                self.ocupado = False
 
 
 # ─────────────────────────── orquestador ───────────────────────────
@@ -631,6 +666,8 @@ class App:
         self.listo = threading.Event()
         self.web = None
         self.enlaces = []
+        self.preguntas = []          # preguntas que se están respondiendo juntas
+        self.t_ult_preg = -1e9
         self.ui_q.put(("auto", self.auto))
         if GUARDAR_TRANSCRIPCION:
             (BASE / "transcripciones").mkdir(exist_ok=True)
@@ -649,14 +686,29 @@ class App:
             with open(self.log, "a", encoding="utf-8") as f:
                 f.write(f"[{datetime.now():%H:%M:%S}] {texto}\n")
         if preg and self.auto and not self.pausado:
-            self.pedir_respuesta(texto, t_fin)
+            self.encolar_pregunta(texto, t_fin)
+
+    def encolar_pregunta(self, texto, t_ref=None):
+        """Si la pregunta llega mientras se responde la anterior (o muy seguida), se suma a ella
+        y se responden todas juntas, en vez de descartar la anterior."""
+        ahora = time.monotonic()
+        if not (self.respondedor.ocupado or ahora - self.t_ult_preg < VENTANA_PREGUNTAS_S):
+            self.preguntas = []
+        self.t_ult_preg = ahora
+        for p in dividir_preguntas(texto):
+            if p not in self.preguntas:
+                self.preguntas.append(p)
+        self.preguntas = self.preguntas[-MAX_PREGUNTAS:]
+        self.respondedor.solicitar(self.preguntas, list(self.historial), t_ref or time.perf_counter())
 
     def pedir_respuesta(self, pregunta=None, t_ref=None):
         if pregunta is None:
             if not self.historial:
                 return
             pregunta = " ".join(list(self.historial)[-2:])
-        self.respondedor.solicitar(pregunta, list(self.historial), t_ref or time.perf_counter())
+        self.preguntas = dividir_preguntas(pregunta)[-MAX_PREGUNTAS:]
+        self.t_ult_preg = time.monotonic()
+        self.respondedor.solicitar(self.preguntas, list(self.historial), t_ref or time.perf_counter())
 
     def alternar_pausa(self):
         self.pausado = not self.pausado

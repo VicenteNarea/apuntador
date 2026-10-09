@@ -25,6 +25,8 @@ Escucha lo que suena en tu PC (la voz de los demás en Meet, Teams o Zoom), lo t
 | Desactivar respuestas automáticas | casilla **Auto** |
 | Agregar documentos en caliente | cópialos a `docs/` y pulsa **Recargar docs** |
 
+**Varias preguntas a la vez:** si en una misma frase te hacen varias preguntas, o llegan seguidas (mientras se responde la anterior o con menos de `VENTANA_PREGUNTAS_S` segundos entre una y otra), se responden juntas, numeradas y en el mismo orden, hasta `MAX_PREGUNTAS`.
+
 Las preguntas detectadas aparecen en amarillo. Arriba se muestra la latencia real (STT y tiempo hasta la primera palabra).
 
 ## Modos: normal, servicio y doble
