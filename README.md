@@ -57,6 +57,14 @@ El panel web muestra lo mismo que la ventana: transcripción, sugerencia local, 
 | Qwen 2.5 7B, primera palabra | 0,2–0,5 s |
 | **Total hasta ver la respuesta** | **~1–1,6 s** |
 
+## Cómo preparar los documentos (`docs/`)
+- **Markdown (`.md`) es el mejor formato.** Cada título (`#`, `##`, `###`) se vuelve una sección y el título acompaña a cada fragmento, así que un título claro ayuda a encontrar la respuesta («## ¿Por qué el MLP?», «## Diapositiva 6 · Justificación»).
+- **Presentaciones:** se leen directo los `.pptx` (texto, tablas, cuadros agrupados y notas del orador como «Guion»). Si la pasas a `.md`, usa un título por diapositiva: `## Diapositiva 6 · Justificación`. Así, «la presentación», «la diapo 6» o «la lámina de conclusiones» apuntan a ese archivo.
+- **El nombre del archivo cuenta:** si la pregunta dice «en el informe» o «según la guía», se priorizan los archivos cuyo nombre tiene esa palabra (`Informe_Final.md`, `Guia_Defensa.md`).
+- Negritas, citas, separadores y enlaces se limpian solos. Las tablas se leen fila por fila.
+- Evita que dos documentos digan cosas distintas sobre lo mismo: el modelo puede mezclarlas (se le pide avisar cuando las detecta).
+- Después de cambiar algo en `docs/`, pulsa **Recargar docs**.
+
 ## PC sin tarjeta NVIDIA (AMD, Intel)
 Funciona igual, pero Whisper corre en el procesador: faster-whisper solo acelera con NVIDIA (CUDA). El programa lo detecta solo y usa `WHISPER_MODEL_CPU` (por defecto `small`), sin perder tiempo intentando CUDA. El diagnóstico lo muestra como **AVISO**, no como falla.
 

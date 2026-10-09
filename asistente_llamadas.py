@@ -114,6 +114,8 @@ Reglas:
   Nunca escribas un esquema primero ni dejes viñetas vacías.
 - Texto plano: viñetas con «•», sin negritas (**), sin títulos (#) y sin separadores (---).
 - Usa primero los DOCUMENTOS y el CONTEXTO PERSONAL; da cifras, fechas y nombres exactos cuando existan.
+- Cada documento trae entre paréntesis su archivo. Si preguntan por «la presentación», «la diapositiva»
+  o «el informe», responde con lo que dice ESE archivo. Si dos documentos se contradicen, dilo en una viñeta.
 - Si la pregunta trae una premisa equivocada (p. ej., confunde qué opción se eligió), corrígela en la primera viñeta.
 - Si los documentos no responden la pregunta, empieza con "⚠" y propone una respuesta prudente
   (p. ej., comprometerse a enviarlo después). Nunca inventes cifras.
@@ -233,6 +235,31 @@ def _filas_a_texto(nombre: str, filas) -> list[str]:
     return out
 
 
+def limpiar_md(linea: str) -> str:
+    """Quita las marcas de Markdown que no aportan al modelo (negritas, código, citas, separadores)."""
+    if re.fullmatch(r"\s*(-{3,}|\*{3,}|_{3,})\s*", linea) or re.fullmatch(r"\s*\|?[\s:|-]+\|?\s*", linea):
+        return ""  # separador horizontal o línea "|---|---|" de una tabla
+    linea = re.sub(r"(\*\*|__|`)", "", linea)
+    linea = re.sub(r"^\s*>\s?", "", linea)  # cita
+    linea = re.sub(r"!\[[^\]]*\]\([^)]*\)", "", linea)  # imagen
+    linea = re.sub(r"\[([^\]]+)\]\([^)]*\)", r"\1", linea)  # enlace → solo el texto
+    if linea.strip().startswith("|"):
+        linea = " · ".join(c.strip() for c in linea.strip().strip("|").split("|"))
+    return linea
+
+
+def _textos_forma(sh) -> list[str]:
+    """Texto de una forma de PowerPoint, entrando en los grupos (muchas diapositivas agrupan cuadros)."""
+    if getattr(sh, "shape_type", None) == 6 or hasattr(sh, "shapes"):  # 6 = GROUP
+        return [t for sub in getattr(sh, "shapes", []) for t in _textos_forma(sub)]
+    out = []
+    if getattr(sh, "has_text_frame", False) and sh.text_frame.text.strip():
+        out.append(sh.text_frame.text.strip())
+    if getattr(sh, "has_table", False) and sh.has_table:
+        out += _filas_a_texto("Tabla", ([c.text for c in f.cells] for f in sh.table.rows))
+    return out
+
+
 def leer_secciones(p: Path) -> list[tuple[str, str]]:
     """Devuelve [(título_de_sección, texto)] respetando la estructura del documento."""
     ext = p.suffix.lower()
@@ -242,12 +269,12 @@ def leer_secciones(p: Path) -> list[tuple[str, str]]:
             return [("", texto)]
         secciones, titulo, buf = [], "", []
         for linea in texto.splitlines():
-            if re.match(r"^#{1,4}\s", linea):
+            if re.match(r"^#{1,6}\s", linea):
                 if any(l.strip() for l in buf):
                     secciones.append((titulo, "\n".join(buf)))
-                titulo, buf = linea.lstrip("#").strip(), []
+                titulo, buf = limpiar_md(linea.lstrip("#").strip()), []
             else:
-                buf.append(linea)
+                buf.append(limpiar_md(linea))
         if any(l.strip() for l in buf):
             secciones.append((titulo, "\n".join(buf)))
         return secciones
@@ -277,12 +304,7 @@ def leer_secciones(p: Path) -> list[tuple[str, str]]:
         from pptx import Presentation
         secciones = []
         for i, sl in enumerate(Presentation(str(p)).slides, 1):
-            textos = []
-            for sh in sl.shapes:
-                if sh.has_text_frame and sh.text_frame.text.strip():
-                    textos.append(sh.text_frame.text.strip())
-                if getattr(sh, "has_table", False) and sh.has_table:
-                    textos += _filas_a_texto("Tabla", ([c.text for c in f.cells] for f in sh.table.rows))
+            textos = [t for sh in sl.shapes for t in _textos_forma(sh)]
             titulo = textos[0].splitlines()[0][:80] if textos else ""
             cuerpo = "\n".join(textos)
             if sl.has_notes_slide:
@@ -335,6 +357,13 @@ def trocear(texto: str, tam: int = 900, solape: int = 150) -> list[str]:
     return trozos
 
 
+# Formas de nombrar los documentos en una pregunta → la etiqueta con que se indexan
+_SINONIMOS_DOC = {"diapositivas": "diapositiva", "diapo": "diapositiva", "diapos": "diapositiva",
+                  "lamina": "diapositiva", "laminas": "diapositiva", "slide": "diapositiva",
+                  "slides": "diapositiva", "ppt": "presentacion", "pptx": "presentacion",
+                  "powerpoint": "presentacion", "presentaciones": "presentacion", "exposicion": "presentacion"}
+
+
 class BaseConocimiento:
     EXT = {".txt", ".md", ".pdf", ".docx", ".pptx", ".xlsx", ".xlsm", ".csv"}
 
@@ -355,28 +384,48 @@ class BaseConocimiento:
             except Exception as e:
                 print(f"[docs] No pude leer {p.name}: {e}")
                 continue
+            etiquetas = tokens(p.stem)  # "Presentacion_Defensa_Grupo9" → presentacion, defensa, grupo9
+            es_present = p.suffix.lower() == ".pptx" or any(t.startswith("Diapositiva") for t, _ in secciones)
+            if es_present:
+                etiquetas += ["presentacion", "diapositiva"]
             for titulo, texto in secciones:
                 if not texto.strip():
                     continue
                 pref = f"[{titulo}]\n" if titulo else ""
-                frag += [(p.name, pref + c) for c in trocear(texto, tam=1100)]
+                # el título de la sección pesa doble: "¿Por qué el MLP?" es justo la respuesta a esa pregunta
+                extra = etiquetas + tokens(titulo)
+                frag += [(p.name, pref + c, extra) for c in trocear(texto, tam=1100)]
         bm, conj = None, []
         if frag:
             from rank_bm25 import BM25Plus  # IDF siempre > 0, funciona bien con pocos documentos
-            toks = [tokens(t) or ["_"] for _, t in frag]
+            toks = [(tokens(t) + et) or ["_"] for _, t, et in frag]
+            etiq = {f: set(et) for f, _, et in frag}
+            frag = [(f, t) for f, t, _ in frag]
+            # palabras que identifican a un archivo (no las que comparten la mayoría, como "defensa")
+            cuenta = {}
+            for et in etiq.values():
+                for w in et:
+                    cuenta[w] = cuenta.get(w, 0) + 1
+            distintivas = {f: {w for w in et if cuenta[w] <= max(1, len(etiq) // 2)} for f, et in etiq.items()}
             bm, conj = BM25Plus(toks), [set(t) for t in toks]
         with self.lock:
             self.frag, self.bm25, self.conj = frag, bm, conj
+            self.distintivas = distintivas if frag else {}
         return len(frag)
 
     def buscar(self, consulta: str, k: int = FRAGMENTOS_POR_PREGUNTA) -> list[tuple[str, str]]:
         with self.lock:
             frag, bm, conj = self.frag, self.bm25, getattr(self, "conj", [])
-        q = tokens(consulta)
+            distintivas = getattr(self, "distintivas", {})
+        q = [_SINONIMOS_DOC.get(w, w) for w in tokens(consulta)]
         if not bm or not q:
             return []
         sc = bm.get_scores(q)
         qs = set(q)
+        # si la pregunta nombra un documento ("en la presentación", "el informe"), priorizar ese archivo
+        nombrados = {f for f, ws in distintivas.items() if ws & qs}
+        if nombrados:
+            sc = np.array([v * 1.8 if frag[i][0] in nombrados else v for i, v in enumerate(sc)])
         return [frag[i] for i in np.argsort(sc)[::-1] if qs & conj[i]][:k]
 
 
