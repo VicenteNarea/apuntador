@@ -34,6 +34,9 @@ class Difusor:
         self._q = queue.Queue()
         self._subs = set()
         self._lock = threading.Lock()
+        self._cond = threading.Condition(self._lock)
+        self._seq = 0
+        self._log = deque(maxlen=5000)  # (n, evento) para los clientes por sondeo
         self._ultimo = {}
         self._trans = deque(maxlen=200)
         self._resp = []
@@ -45,6 +48,9 @@ class Difusor:
             self._registrar(ev)
             for s in self._subs:
                 s.put(ev)
+            self._seq += 1
+            self._log.append((self._seq, ev))
+            self._cond.notify_all()
 
     def get_nowait(self):
         return self._q.get_nowait()
@@ -71,14 +77,27 @@ class Difusor:
             self._trans.clear()
             self._resp = []
 
+    def _foto(self):
+        return [("reset",), *self._ultimo.values(), *self._trans, *self._resp]
+
     def suscribir(self) -> queue.Queue:
         q = queue.Queue()
         with self._lock:
-            q.put(("reset",))
-            for ev in [*self._ultimo.values(), *self._trans, *self._resp]:
+            for ev in self._foto():
                 q.put(ev)
             self._subs.add(q)
         return q
+
+    def esperar(self, desde: int, timeout: float = 20):
+        """Sondeo largo: devuelve (n, eventos posteriores a 'desde'). Espera hasta timeout si no hay
+        novedades. Si 'desde' es 0 o quedó fuera del registro, entrega la foto completa del estado."""
+        with self._cond:
+            if desde == self._seq:
+                self._cond.wait(timeout)
+            primero = self._log[0][0] if self._log else self._seq + 1
+            if desde <= 0 or desde > self._seq or desde < primero - 1:
+                return self._seq, self._foto()
+            return self._seq, [ev for n, ev in self._log if n > desde]
 
     def desuscribir(self, q):
         with self._lock:
@@ -215,6 +234,14 @@ def _crear_manejador(app, token):
                 return self._enviar(200, PAGINA.encode("utf-8"), "text/html; charset=utf-8")
             if u.path == "/eventos":
                 return self._sse()
+            if u.path == "/sondeo":
+                try:
+                    desde = int((qs.get("desde") or ["0"])[0])
+                except ValueError:
+                    desde = 0
+                n, evs = app.ui_q.esperar(desde)
+                cuerpo = json.dumps({"n": n, "ev": evs}, ensure_ascii=False).encode("utf-8")
+                return self._enviar(200, cuerpo, "application/json; charset=utf-8")
             self._enviar(404, b"no encontrado")
 
         def do_POST(self):
@@ -383,11 +410,33 @@ function evento(e){
     case 'limpiar': limpiar(); break;
   }
 }
+// Primero intenta eventos en vivo (SSE). Si en 3 s no llega nada (algunos proxys, como el túnel
+// de Cloudflare, los retienen), cambia a sondeo largo, que funciona a través de cualquier proxy.
+let modoSondeo = false;
 function conectar(){
   const es = new EventSource('/eventos');
-  es.onopen = () => $('#con').className = 'ok';
-  es.onmessage = m => evento(JSON.parse(m.data));
-  es.onerror = () => { $('#con').className = ''; if (es.readyState === 2) setTimeout(conectar, 3000); };
+  let recibido = false;
+  const plazo = setTimeout(() => { if (!recibido){ es.close(); modoSondeo = true; sondear(0); } }, 3000);
+  es.onmessage = m => { recibido = true; $('#con').className = 'ok'; evento(JSON.parse(m.data)); };
+  es.onerror = () => {
+    $('#con').className = '';
+    if (es.readyState === 2 && !modoSondeo){ clearTimeout(plazo); setTimeout(conectar, 3000); }
+  };
+}
+async function sondear(desde){
+  while (true){
+    try {
+      const r = await fetch('/sondeo?desde=' + desde, {cache: 'no-store'});
+      if (r.status === 401){ location.reload(); return; }
+      const d = await r.json();
+      $('#con').className = 'ok';
+      d.ev.forEach(evento);
+      desde = d.n;
+    } catch (e){
+      $('#con').className = '';
+      await new Promise(f => setTimeout(f, 2000));
+    }
+  }
 }
 async function accion(a, q = ''){
   const r = await fetch('/accion/' + a + q, {method: 'POST'});

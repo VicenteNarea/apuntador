@@ -116,3 +116,19 @@ def test_sse_envia_foto_y_eventos(servidor):
     assert recibidos[0] == ["reset"]
     assert ["trans", "¿Cuál es el OPEX?", True] in recibidos
     assert ["tok2", "respuesta nube"] in recibidos
+
+
+def test_sondeo_largo(servidor):
+    app, url = servidor
+    app.ui_q.put(("trans", "hola", False))
+    ses = requests.Session()
+    ses.get(url + "/?t=clave123")
+    d = ses.get(url + "/sondeo?desde=0", timeout=5).json()
+    assert d["ev"][0] == ["reset"] and ["trans", "hola", False] in d["ev"]
+    n = d["n"]
+    import threading
+    threading.Timer(0.3, lambda: app.ui_q.put(("tok", "x"))).start()
+    t0 = time.time()
+    d2 = ses.get(url + f"/sondeo?desde={n}", timeout=5).json()  # espera hasta que llega el token
+    assert d2["ev"] == [["tok", "x"]] and d2["n"] == n + 1 and time.time() - t0 < 3
+    assert requests.get(url + "/sondeo?desde=0").status_code == 401
