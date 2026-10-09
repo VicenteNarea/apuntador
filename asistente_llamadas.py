@@ -72,10 +72,13 @@ HOTKEY_RESPONDER = "ctrl+alt+r"    # fuerza respuesta a lo último dicho
 HOTKEY_PAUSA = "ctrl+alt+p"
 OPACIDAD = 0.94
 
-# Panel web (ver y controlar desde la tablet o el celular)
-WEB_ACTIVO = True                  # http://IP-del-PC:WEB_PUERTO en la misma red wifi
-WEB_PUERTO = 8765
-WEB_TUNEL = False                  # True = enlace público con Cloudflare (o usa iniciar_compartido.bat)
+# Modo de ejecución (también se elige con --modo; los .bat ya lo pasan)
+#   "normal"   → solo la ventana en el PC
+#   "servicio" → solo el panel web (tablet/celular), sin ventana en el PC
+#   "doble"    → ventana en el PC + panel web
+MODO = "normal"
+WEB_PUERTO = 8765                  # http://IP-del-PC:WEB_PUERTO en la misma red wifi
+WEB_TUNEL = False                  # True = además enlace público con Cloudflare (o pasa --tunel)
 # ═════════════════════════════════════════════════════════════════════
 
 SISTEMA = """Eres el apuntador silencioso de una persona que está en una reunión en vivo.
@@ -890,10 +893,42 @@ class Interfaz:
         os._exit(0)
 
 
+def _servicio(app: App):
+    """Modo servicio: sin ventana; el panel web es la interfaz. La consola muestra estado y enlaces."""
+    print("Apuntador en modo servicio. Cierra esta ventana o pulsa Ctrl+C para detenerlo.")
+    try:
+        while True:
+            try:
+                ev = app.ui_q.get(timeout=1)
+            except queue.Empty:
+                continue
+            if ev[0] in ("estado", "trans"):
+                try:
+                    print(("» " if ev[0] == "trans" else "· ") + ev[1])
+                except Exception:
+                    pass
+    except KeyboardInterrupt:
+        pass
+    finally:
+        app.cerrar()
+
+
 def main():
+    import argparse
+    ap = argparse.ArgumentParser(description="Apuntador de llamadas")
+    ap.add_argument("--modo", choices=("normal", "servicio", "doble"), default=MODO)
+    ap.add_argument("--tunel", action="store_true", help="enlace público con Cloudflare (modos servicio y doble)")
+    args = ap.parse_args()
+    web = args.modo in ("servicio", "doble")
+    tunel = web and (args.tunel or WEB_TUNEL)
+
     app = App()
+    if args.modo == "servicio":
+        app.iniciar(web=True, tunel=tunel)
+        _servicio(app)
+        return
     ui = Interfaz(app)
-    app.iniciar(web=WEB_ACTIVO or "--tunel" in sys.argv, tunel=WEB_TUNEL or "--tunel" in sys.argv)
+    app.iniciar(web=web, tunel=tunel)
     ui.root.mainloop()
 
 

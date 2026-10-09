@@ -6,5 +6,5 @@ if errorlevel 1 if not exist "%ProgramFiles(x86)%\cloudflared\cloudflared.exe" i
   winget install -e --id Cloudflare.cloudflared --accept-source-agreements --accept-package-agreements
 )
 call .venv\Scripts\activate
-python asistente_llamadas.py --tunel
+python asistente_llamadas.py --modo doble --tunel
 pause

@@ -148,7 +148,7 @@ class ServidorWeb:
         """Abre un túnel rápido de Cloudflare (sin cuenta). al_listo(url, error) se llama una vez."""
         exe = buscar_cloudflared(self.base)
         if not exe:
-            al_listo(None, "cloudflared no está instalado (usa iniciar_compartido.bat)")
+            al_listo(None, "cloudflared no está instalado (usa iniciar_servicio.bat o iniciar_doble.bat)")
             return
         self.tunel = subprocess.Popen(
             [exe, "tunnel", "--no-autoupdate", "--url", f"http://127.0.0.1:{self.puerto}"],
