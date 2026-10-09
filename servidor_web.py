@@ -444,5 +444,7 @@ async function accion(a, q = ''){
 }
 document.querySelectorAll('button[data-a]').forEach(b => b.onclick = () => accion(b.dataset.a));
 $('#auto').onchange = e => accion('auto', '?v=' + (e.target.checked ? 1 : 0));
-conectar();
+// Los túneles rápidos de Cloudflare no soportan SSE: fuera de la red local, solo sondeo.
+const enRedLocal = /^(localhost|127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(location.hostname);
+if (enRedLocal) conectar(); else { modoSondeo = true; sondear(0); }
 </script></body></html>"""
