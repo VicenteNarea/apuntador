@@ -44,6 +44,11 @@ LLM_NUM_CTX = 4096
 LLM_MAX_TOKENS = 220
 LLM_TEMPERATURA = 0.2
 
+# LLM en la nube (OpenAI) — responde en paralelo al local
+OPENAI_URL = "https://api.openai.com/v1/chat/completions"
+OPENAI_MODELO = "gpt-6-luna"
+OPENAI_ESFUERZO = "none"           # reasoning_effort; None para no enviarlo
+
 # Conocimiento propio
 DOCS_DIR = BASE / "docs"           # PDF, DOCX, XLSX, CSV, TXT, MD
 CONTEXTO_FILE = BASE / "contexto.txt"
@@ -503,10 +508,61 @@ class Respondedor(threading.Thread):
         fuentes = sorted({f for f, _ in frag})
         return [{"role": "system", "content": SISTEMA}, {"role": "user", "content": user}], fuentes
 
-    def _generar(self, gen, pregunta, hist, t_ref):
+    @staticmethod
+    def _clave_openai():
+        clave = os.environ.get("OPENAI_API_KEY")
+        if clave:
+            return clave.strip()
+        for env in (BASE / ".env", BASE / ".env" / ".env", BASE / ".env" / ".env.txt", BASE / ".env.txt"):
+            if env.is_file():
+                for linea in env.read_text(encoding="utf-8-sig", errors="ignore").splitlines():
+                    linea = linea.strip()
+                    if linea.startswith("OPENAI_API_KEY") and "=" in linea:
+                        return linea.split("=", 1)[1].strip().strip('"').strip("'")
+        return None
+
+    def _generar_openai(self, gen, mensajes):
         import requests
+        try:
+            clave = self._clave_openai()
+            if not clave:
+                self.app.ui_q.put(("tok2", "[Falta OPENAI_API_KEY en el entorno o en .env]"))
+                return
+            payload = {"model": OPENAI_MODELO, "stream": True, "messages": mensajes,
+                       "max_completion_tokens": LLM_MAX_TOKENS + (0 if OPENAI_ESFUERZO in (None, "none") else 2000)}
+            if OPENAI_ESFUERZO:
+                payload["reasoning_effort"] = OPENAI_ESFUERZO
+            with requests.post(OPENAI_URL, json=payload, stream=True, timeout=(10, 120),
+                               headers={"Authorization": f"Bearer {clave}"}) as r:
+                if not r.ok:
+                    raise RuntimeError(f"HTTP {r.status_code}: {r.text[:200]}")
+                for linea in r.iter_lines():
+                    if gen != self.gen:
+                        return
+                    if not linea or not linea.startswith(b"data: "):
+                        continue
+                    dato = linea[6:]
+                    if dato == b"[DONE]":
+                        break
+                    for ch in json.loads(dato).get("choices", []):
+                        tok = (ch.get("delta") or {}).get("content") or ""
+                        if tok:
+                            self.app.ui_q.put(("tok2", tok))
+        except Exception as e:
+            self.app.ui_q.put(("tok2", f"\n[Error OpenAI: {e}]"))
+
+    def _generar(self, gen, pregunta, hist, t_ref):
         mensajes, fuentes = self._mensajes(pregunta, hist)
         self.app.ui_q.put(("resp_inicio", pregunta, fuentes))
+        hilo = threading.Thread(target=self._generar_openai, args=(gen, mensajes), daemon=True)
+        hilo.start()
+        try:
+            self._generar_local(gen, mensajes, t_ref)
+        finally:
+            hilo.join()
+
+    def _generar_local(self, gen, mensajes, t_ref):
+        import requests
         payload = {"model": LLM_MODEL, "stream": True, "keep_alive": "60m", "messages": mensajes,
                    "options": {"temperature": LLM_TEMPERATURA, "num_ctx": LLM_NUM_CTX,
                                "num_predict": LLM_MAX_TOKENS}}
@@ -749,7 +805,16 @@ class Interfaz:
                     self._agregar(self.t_resp, f"↳ {ev[1]}\n\n", "preg")
                     if not self.fuentes:
                         self._agregar(self.t_resp, "⚠ Sin respaldo en tus documentos — respuesta improvisada\n\n", "aviso")
+                    self._agregar(self.t_resp, f"🖥 Local ({LLM_MODEL})\n", "fuente")
+                    self.t_resp.mark_set("fin_local", "end-1c")
+                    self.t_resp.mark_gravity("fin_local", "left")   # el encabezado OpenAI queda después
+                    self._agregar(self.t_resp, f"\n\n☁ OpenAI ({OPENAI_MODELO})\n", "fuente")
+                    self.t_resp.mark_gravity("fin_local", "right")  # los tokens locales avanzan la marca
                 elif tipo == "tok":
+                    self.t_resp.configure(state="normal")
+                    self.t_resp.insert("fin_local", ev[1])
+                    self.t_resp.configure(state="disabled")
+                elif tipo == "tok2":
                     self._agregar(self.t_resp, ev[1])
                 elif tipo == "resp_fin" and self.fuentes:
                     self._agregar(self.t_resp, "\n\nFuentes: " + ", ".join(self.fuentes), "fuente")
