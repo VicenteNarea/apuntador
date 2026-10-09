@@ -1,0 +1,14 @@
+faster-whisper>=1.1.0
+nvidia-cublas-cu12
+nvidia-cudnn-cu12==9.*
+PyAudioWPatch
+webrtcvad-wheels
+numpy
+scipy
+requests
+rank-bm25
+pypdf
+python-docx
+python-pptx
+openpyxl
+keyboard

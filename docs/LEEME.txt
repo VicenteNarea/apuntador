@@ -1,0 +1,3 @@
+Pon aquí los documentos que la app usará para responder: PDF, DOCX, XLSX, CSV, TXT o MD.
+Pueden ir en subcarpetas. Después de agregar archivos, pulsa "Recargar docs" en la app.
+Esta carpeta está excluida de git, así que tus documentos no se suben a ningún repositorio.
