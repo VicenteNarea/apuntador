@@ -48,7 +48,7 @@ WHISPER_MAX_COMPRESION = 2.4       # descarta segmentos repetitivos ("Q, Q, Q, Q
 OLLAMA_URL = "http://127.0.0.1:11434/api/chat"  # no usar "localhost": en Windows intenta IPv6 primero y pierde ~2 s
 LLM_MODEL = "qwen2.5:7b"           # si falta VRAM: "qwen2.5:3b"
 LLM_NUM_CTX = 4096
-LLM_MAX_TOKENS = 220
+LLM_MAX_TOKENS = 300               # tope de largo (no frena la 1ª palabra; evita respuestas cortadas)
 LLM_TEMPERATURA = 0.2
 
 # LLM en la nube (OpenAI) — responde en paralelo al local
@@ -65,7 +65,7 @@ FRAGMENTOS_POR_PREGUNTA = 4
 # Varias preguntas a la vez
 MAX_PREGUNTAS = 4                  # máximo de preguntas que se responden juntas
 VENTANA_PREGUNTAS_S = 8            # una pregunta que llega a menos de esto de la anterior se suma a ella
-TOKENS_POR_PREGUNTA_EXTRA = 120    # tokens de respuesta adicionales por cada pregunta extra
+TOKENS_POR_PREGUNTA_EXTRA = 160    # tokens de respuesta adicionales por cada pregunta extra
 
 # Detección de frases (latencia ↔ precisión)
 SILENCIO_MS = 600                  # silencio que cierra una frase (bajar = más rápido, más cortes)
@@ -84,6 +84,10 @@ HOTKEY_RESPONDER = "ctrl+alt+r"    # fuerza respuesta a lo último dicho
 HOTKEY_PAUSA = "ctrl+alt+p"
 OPACIDAD = 0.94
 
+# Largo de las respuestas: completas pero breves (para leer de un vistazo y decir en voz alta)
+RESPUESTA_VINETAS = 4              # máximo de viñetas para una pregunta
+RESPUESTA_PALABRAS = 25            # máximo de palabras por viñeta
+
 # Modo de ejecución (también se elige con --modo; los .bat ya lo pasan)
 #   "normal"   → solo la ventana en el PC
 #   "servicio" → solo el panel web (tablet/celular), sin ventana en el PC
@@ -92,14 +96,17 @@ MODO = "normal"
 WEB_PUERTO = 8765                  # http://IP-del-PC:WEB_PUERTO en la misma red wifi
 # ═════════════════════════════════════════════════════════════════════
 
-SISTEMA = """Eres el apuntador silencioso de una persona que está en una reunión en vivo.
+SISTEMA = f"""Eres el apuntador silencioso de una persona que está en una reunión en vivo.
 Te llega lo que le acaban de preguntar y debes darle lo que necesita para responder en voz alta, ya.
 
 Reglas:
-- Español. Máximo 3 viñetas cortas (≤ 20 palabras cada una). La primera es la respuesta directa.
+- Español. Máximo {RESPUESTA_VINETAS} viñetas de ≤ {RESPUESTA_PALABRAS} palabras. La primera es la respuesta directa;
+  las demás, solo los datos clave que la respaldan (cifras, nombres, razones, consecuencias).
+- Si el documento trae una respuesta larga, resúmela: quédate con lo esencial y lo que te pueden
+  repreguntar. No copies párrafos ni repitas la pregunta. Si basta con menos viñetas, usa menos.
 - Si te hacen VARIAS preguntas (aunque vengan en una sola frase), respóndelas todas y en orden.
   Para cada una: una línea con el número y el tema (por ejemplo «1) Costo del proyecto») y debajo
-  1–2 viñetas con la respuesta. Termina cada bloque antes de empezar el siguiente.
+  2–3 viñetas con lo esencial. Termina cada bloque antes de empezar el siguiente.
   Nunca escribas un esquema primero ni dejes viñetas vacías.
 - Texto plano: viñetas con «•», sin negritas (**), sin títulos (#) y sin separadores (---).
 - Usa primero los DOCUMENTOS y el CONTEXTO PERSONAL; da cifras, fechas y nombres exactos cuando existan.
