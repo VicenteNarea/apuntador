@@ -1,26 +1,19 @@
 """
 Panel web del Apuntador: la misma vista de la ventana (transcripción, sugerencia local,
 sugerencia OpenAI y botones) servida por HTTP para verla y controlarla desde una tablet,
-en la red local o por internet con un túnel de Cloudflare (cloudflared).
+en la misma red wifi.
 
 Solo usa la biblioteca estándar. Los eventos llegan al navegador por Server-Sent Events.
-Todo acceso exige la clave (token) guardada en .web_token o en APUNTADOR_TOKEN.
 """
-import hmac
 import json
 import os
 import queue
-import re
-import secrets
-import shutil
 import socket
-import subprocess
 import threading
 from collections import deque
-from http import cookies
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, quote, urlparse
+from urllib.parse import parse_qs, urlparse
 
 
 # ─────────────────────── difusión de eventos de UI ───────────────────────
@@ -105,22 +98,6 @@ class Difusor:
 
 
 # ─────────────────────────── utilidades ───────────────────────────
-def leer_token(base: Path) -> str:
-    t = os.environ.get("APUNTADOR_TOKEN", "").strip()
-    if t:
-        return t
-    f = base / ".web_token"
-    try:
-        t = f.read_text(encoding="utf-8").strip()
-        if t:
-            return t
-    except FileNotFoundError:
-        pass
-    t = secrets.token_urlsafe(6)  # 8 caracteres
-    f.write_text(t, encoding="utf-8")
-    return t
-
-
 def ip_local() -> str:
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -132,81 +109,29 @@ def ip_local() -> str:
         return "127.0.0.1"
 
 
-def buscar_cloudflared(base: Path):
-    exe = shutil.which("cloudflared")
-    if exe:
-        return exe
-    cand = [base / "cloudflared.exe"]
-    for var in ("ProgramFiles(x86)", "ProgramFiles"):
-        if os.environ.get(var):
-            cand.append(Path(os.environ[var]) / "cloudflared" / "cloudflared.exe")
-    if os.environ.get("LOCALAPPDATA"):
-        cand.append(Path(os.environ["LOCALAPPDATA"]) / "Microsoft" / "WinGet" / "Links" / "cloudflared.exe")
-    for c in cand:
-        if c.is_file():
-            return str(c)
-    return None
-
-
 # ─────────────────────────── servidor ───────────────────────────
 class ServidorWeb:
-    def __init__(self, app, puerto: int, token: str, base: Path):
-        self.app, self.puerto, self.token, self.base = app, puerto, token, base
+    def __init__(self, app, puerto: int):
+        self.app, self.puerto = app, puerto
         self.httpd = None
-        self.tunel = None
 
     def iniciar(self):
-        self.httpd = ThreadingHTTPServer(("0.0.0.0", self.puerto), _crear_manejador(self.app, self.token))
+        self.httpd = ThreadingHTTPServer(("0.0.0.0", self.puerto), _crear_manejador(self.app))
         self.httpd.daemon_threads = True
         threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
 
     def url_local(self):
-        return f"http://{ip_local()}:{self.puerto}/?t={quote(self.token)}"
-
-    def iniciar_tunel(self, al_listo):
-        """Abre un túnel rápido de Cloudflare (sin cuenta). al_listo(url, error) se llama una vez."""
-        exe = buscar_cloudflared(self.base)
-        if not exe:
-            al_listo(None, "cloudflared no está instalado (usa iniciar_servicio.bat o iniciar_doble.bat)")
-            return
-        self.tunel = subprocess.Popen(
-            [exe, "tunnel", "--no-autoupdate", "--url", f"http://127.0.0.1:{self.puerto}"],
-            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="ignore",
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-
-        def leer():
-            avisado = False
-            for linea in self.tunel.stderr:  # seguir leyendo siempre para no bloquear a cloudflared
-                m = re.search(r"https://[-a-z0-9]+\.trycloudflare\.com", linea)
-                if m and not avisado:
-                    avisado = True
-                    al_listo(f"{m.group(0)}/?t={quote(self.token)}", None)
-            if not avisado:
-                al_listo(None, "cloudflared se cerró sin entregar un enlace")
-        threading.Thread(target=leer, daemon=True).start()
+        return f"http://{ip_local()}:{self.puerto}/"
 
     def cerrar(self):
-        if self.tunel and self.tunel.poll() is None:
-            self.tunel.terminate()
         if self.httpd:
             self.httpd.shutdown()
 
 
-def _crear_manejador(app, token):
+def _crear_manejador(app):
     class Manejador(BaseHTTPRequestHandler):
         def log_message(self, *a):
             pass
-
-        def _autorizado(self, qs) -> bool:
-            t = (qs.get("t") or [""])[0]
-            if t and hmac.compare_digest(t, token):
-                return True
-            c = cookies.SimpleCookie()
-            try:
-                c.load(self.headers.get("Cookie", ""))
-            except cookies.CookieError:
-                return False
-            return "apt" in c and hmac.compare_digest(c["apt"].value, token)
 
         def _enviar(self, code, cuerpo=b"", tipo="text/plain; charset=utf-8", extra=None):
             self.send_response(code)
@@ -222,14 +147,6 @@ def _crear_manejador(app, token):
         def do_GET(self):
             u = urlparse(self.path)
             qs = parse_qs(u.query)
-            if not self._autorizado(qs):
-                if u.path == "/":
-                    return self._enviar(401, PAGINA_CLAVE.encode("utf-8"), "text/html; charset=utf-8")
-                return self._enviar(401, b"no autorizado")
-            if u.path == "/" and "t" in qs:  # guarda la clave en una cookie y la quita de la barra
-                return self._enviar(303, extra={
-                    "Location": "/",
-                    "Set-Cookie": f"apt={token}; Path=/; Max-Age=2592000; HttpOnly; SameSite=Lax"})
             if u.path == "/":
                 return self._enviar(200, PAGINA.encode("utf-8"), "text/html; charset=utf-8")
             if u.path == "/eventos":
@@ -247,8 +164,6 @@ def _crear_manejador(app, token):
         def do_POST(self):
             u = urlparse(self.path)
             qs = parse_qs(u.query)
-            if not self._autorizado(qs):
-                return self._enviar(401, b"no autorizado")
             acc = u.path.rstrip("/").rsplit("/", 1)[-1]
             if acc == "responder":
                 app.pedir_respuesta()
@@ -303,24 +218,6 @@ _ESTILO_BASE = """
 *{box-sizing:border-box}
 html,body{margin:0;height:100%;background:var(--bg);color:var(--txt);font-family:"Segoe UI",system-ui,-apple-system,Roboto,sans-serif}
 """
-
-PAGINA_CLAVE = """<!doctype html><html lang="es"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1"><title>Apuntador</title>
-<style>""" + _ESTILO_BASE + """
-body{display:flex;align-items:center;justify-content:center;padding:16px}
-form{background:var(--panel);padding:24px;border-radius:10px;width:100%;max-width:340px}
-h1{font-size:1.1rem;margin:0 0 14px}
-input,button{width:100%;font:inherit;padding:12px;border-radius:8px;border:0;margin-top:8px}
-input{background:var(--bg);color:var(--txt)}
-button{background:var(--boton);color:var(--txt);cursor:pointer}
-p{color:var(--tenue);font-size:.85rem;margin:12px 0 0}
-</style></head><body>
-<form onsubmit="location.href='/?t='+encodeURIComponent(document.getElementById('c').value);return false">
-<h1>Apuntador</h1>
-<input id="c" placeholder="Clave" autocomplete="off" autofocus>
-<button>Entrar</button>
-<p>La clave aparece en la ventana del Apuntador y en el archivo .web_token.</p>
-</form></body></html>"""
 
 PAGINA = """<!doctype html><html lang="es"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
@@ -410,8 +307,8 @@ function evento(e){
     case 'limpiar': limpiar(); break;
   }
 }
-// Primero intenta eventos en vivo (SSE). Si en 3 s no llega nada (algunos proxys, como el túnel
-// de Cloudflare, los retienen), cambia a sondeo largo, que funciona a través de cualquier proxy.
+// Primero intenta eventos en vivo (SSE). Si en 3 s no llega nada (algún proxy o antivirus los
+// retiene), cambia a sondeo largo.
 let modoSondeo = false;
 function conectar(){
   const es = new EventSource('/eventos');
@@ -427,7 +324,6 @@ async function sondear(desde){
   while (true){
     try {
       const r = await fetch('/sondeo?desde=' + desde, {cache: 'no-store'});
-      if (r.status === 401){ location.reload(); return; }
       const d = await r.json();
       $('#con').className = 'ok';
       d.ev.forEach(evento);
@@ -439,12 +335,9 @@ async function sondear(desde){
   }
 }
 async function accion(a, q = ''){
-  const r = await fetch('/accion/' + a + q, {method: 'POST'});
-  if (r.status === 401) location.reload();
+  await fetch('/accion/' + a + q, {method: 'POST'});
 }
 document.querySelectorAll('button[data-a]').forEach(b => b.onclick = () => accion(b.dataset.a));
 $('#auto').onchange = e => accion('auto', '?v=' + (e.target.checked ? 1 : 0));
-// Los túneles rápidos de Cloudflare no soportan SSE: fuera de la red local, solo sondeo.
-const enRedLocal = /^(localhost|127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(location.hostname);
-if (enRedLocal) conectar(); else { modoSondeo = true; sondear(0); }
+conectar();
 </script></body></html>"""

@@ -34,13 +34,13 @@ Las preguntas detectadas aparecen en amarillo. Arriba se muestra la latencia rea
 | **Servicio** | Sin ventana ni consola en el PC: solo un ícono en la bandeja del sistema (junto a la hora). Se ve y controla desde la tablet o el celular | `iniciar_servicio.bat` |
 | **Doble** | Ventana en el PC + panel web en la tablet, sincronizados | `iniciar_doble.bat` |
 
-El panel web muestra lo mismo que la ventana: transcripción, sugerencia local, sugerencia de OpenAI y los botones. En servicio y doble los enlaces aparecen en la consola (y arriba en la ventana, en modo doble):
+El panel web muestra lo mismo que la ventana: transcripción, sugerencia local, sugerencia de OpenAI y los botones.
 
-- **Misma red wifi:** `Tablet (misma red): http://192.168.x.x:8765/?t=CLAVE`. La primera vez Windows pregunta si permite a Python en la red: acepta **Redes privadas**.
-- **Fuera de tu red (internet):** `Internet: https://….trycloudflare.com/?t=CLAVE`, vía túnel de Cloudflare. Los `.bat` de servicio y doble instalan `cloudflared` la primera vez. El enlace cambia cada vez que se abre.
-- La **clave** está en `.web_token` (se crea sola). Bórrala para generar otra o fíjala con la variable `APUNTADOR_TOKEN`. Sin clave el panel no muestra nada.
-- En modo servicio, el ícono de la bandeja tiene **Abrir panel**, **Ver enlaces y clave** (abre `enlaces.txt`), **Pausar / reanudar** y **Salir**. Si algo falla, revisa `servicio.log`.
-- Desde consola: `python asistente_llamadas.py --modo servicio|doble|normal [--tunel]`. Puerto: `WEB_PUERTO`.
+- **Cómo entrar:** en la tablet (conectada al mismo wifi que el PC) abre `http://192.168.x.x:8765`. El enlace exacto aparece en la consola, arriba en la ventana (modo doble) y en `enlaces.txt`.
+- La primera vez Windows pregunta si permite a Python en la red: acepta **Redes privadas**.
+- No pide clave: cualquiera conectado a tu misma red wifi podría abrirlo.
+- En modo servicio, el ícono de la bandeja tiene **Abrir panel**, **Ver enlace para la tablet** (abre `enlaces.txt`), **Pausar / reanudar** y **Salir**. Si algo falla, revisa `servicio.log`.
+- Desde consola: `python asistente_llamadas.py --modo servicio|doble|normal`. Puerto: `WEB_PUERTO`.
 
 ## Latencia esperada (RTX 3060 Ti)
 | Etapa | Tiempo |

@@ -22,7 +22,7 @@ from pathlib import Path
 
 import numpy as np
 
-from servidor_web import Difusor, ServidorWeb, leer_token
+from servidor_web import Difusor, ServidorWeb
 
 try:
     import tkinter as tk
@@ -55,7 +55,7 @@ OPENAI_ESFUERZO = "none"           # reasoning_effort; None para no enviarlo
 # Conocimiento propio
 DOCS_DIR = BASE / "docs"           # PDF, DOCX, XLSX, CSV, TXT, MD
 CONTEXTO_FILE = BASE / "contexto.txt"
-ENLACES_FILE = BASE / "enlaces.txt"   # enlaces del panel web y clave (se reescribe al iniciar)
+ENLACES_FILE = BASE / "enlaces.txt"   # enlace del panel web (se reescribe al iniciar)
 FRAGMENTOS_POR_PREGUNTA = 4
 
 # Detección de frases (latencia ↔ precisión)
@@ -79,7 +79,6 @@ OPACIDAD = 0.94
 #   "doble"    → ventana en el PC + panel web
 MODO = "normal"
 WEB_PUERTO = 8765                  # http://IP-del-PC:WEB_PUERTO en la misma red wifi
-WEB_TUNEL = False                  # True = además enlace público con Cloudflare (o pasa --tunel)
 # ═════════════════════════════════════════════════════════════════════
 
 SISTEMA = """Eres el apuntador silencioso de una persona que está en una reunión en vivo.
@@ -682,21 +681,14 @@ class App:
         except OSError:
             pass
 
-    def _iniciar_web(self, tunel: bool):
+    def _iniciar_web(self):
         try:
-            self.web = ServidorWeb(self, WEB_PUERTO, leer_token(BASE), BASE)
+            self.web = ServidorWeb(self, WEB_PUERTO)
             self.web.iniciar()
         except Exception as e:
             self._enlace(f"Panel web desactivado: {e}")
             return
-        self._enlace(f"Tablet (misma red): {self.web.url_local()}")
-        if tunel:
-            self._enlace("Internet: abriendo túnel de Cloudflare…")
-
-            def listo(url, error):
-                self.enlaces.pop()
-                self._enlace(f"Internet: {url}" if url else f"Internet: {error}")
-            self.web.iniciar_tunel(listo)
+        self._enlace(f"Tablet (misma red wifi): {self.web.url_local()}")
 
     def _leer_contexto(self):
         try:
@@ -733,9 +725,9 @@ class App:
         except Exception as e:
             self.estado(f"Error al iniciar: {e}")
 
-    def iniciar(self, hotkeys: bool = True, web: bool = False, tunel: bool = False):
+    def iniciar(self, hotkeys: bool = True, web: bool = False):
         if web:
-            self._iniciar_web(tunel)
+            self._iniciar_web()
         self.segmentador.start()
         self.respondedor.start()
         threading.Thread(target=self._arranque, daemon=True).start()
@@ -937,7 +929,7 @@ def _bandeja(app: App):
 
     def abrir_panel(icono, item):
         if app.web:
-            webbrowser.open(f"http://127.0.0.1:{WEB_PUERTO}/?t={app.web.token}")
+            webbrowser.open(f"http://127.0.0.1:{WEB_PUERTO}/")
 
     def ver_enlaces(icono, item):
         if ENLACES_FILE.exists():
@@ -945,7 +937,7 @@ def _bandeja(app: App):
 
     icono = pystray.Icon("apuntador", img, "Apuntador · iniciando…", pystray.Menu(
         pystray.MenuItem("Abrir panel", abrir_panel, default=True),
-        pystray.MenuItem("Ver enlaces y clave", ver_enlaces),
+        pystray.MenuItem("Ver enlace para la tablet", ver_enlaces),
         pystray.MenuItem("Pausar / reanudar", lambda i, it: app.alternar_pausa()),
         pystray.Menu.SEPARATOR,
         pystray.MenuItem("Salir", lambda i, it: i.stop())))
@@ -964,18 +956,16 @@ def main():
     import argparse
     ap = argparse.ArgumentParser(description="Apuntador de llamadas")
     ap.add_argument("--modo", choices=("normal", "servicio", "doble"), default=MODO)
-    ap.add_argument("--tunel", action="store_true", help="enlace público con Cloudflare (modos servicio y doble)")
     ap.add_argument("--oculto", action="store_true",
                     help="modo servicio sin consola: ícono en la bandeja y registro en servicio.log")
     args = ap.parse_args()
     if args.oculto:  # con pythonw no hay consola: todo lo impreso va a servicio.log
         sys.stdout = sys.stderr = open(BASE / "servicio.log", "w", encoding="utf-8", buffering=1)
     web = args.modo in ("servicio", "doble")
-    tunel = web and (args.tunel or WEB_TUNEL)
 
     app = App()
     if args.modo == "servicio":
-        app.iniciar(web=True, tunel=tunel)
+        app.iniciar(web=True)
         if args.oculto:
             try:
                 _bandeja(app)
@@ -985,7 +975,7 @@ def main():
         _servicio(app)
         return
     ui = Interfaz(app)
-    app.iniciar(web=web, tunel=tunel)
+    app.iniciar(web=web)
     ui.root.mainloop()
 
 

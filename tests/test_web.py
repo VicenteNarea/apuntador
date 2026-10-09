@@ -1,4 +1,4 @@
-"""Panel web: difusión de eventos, clave de acceso, acciones y SSE (sin GPU, audio ni Ollama)."""
+"""Panel web: difusión de eventos, acciones, SSE y sondeo (sin GPU, audio ni Ollama)."""
 import json
 import socket
 import sys
@@ -9,7 +9,7 @@ import pytest
 import requests
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from servidor_web import Difusor, ServidorWeb, leer_token  # noqa: E402
+from servidor_web import Difusor, ServidorWeb  # noqa: E402
 
 
 def test_difusor_foto_y_cola():
@@ -37,14 +37,6 @@ def test_difusor_foto_y_cola():
     tipos2 = [q2.get_nowait()[0] for _ in range(q2.qsize())]
     assert "trans" not in tipos2 and "tok" not in tipos2
     assert q.get_nowait() == ("limpiar",)  # los suscritos reciben los eventos en vivo
-
-
-def test_leer_token_persistente(tmp_path, monkeypatch):
-    monkeypatch.delenv("APUNTADOR_TOKEN", raising=False)
-    t = leer_token(tmp_path)
-    assert len(t) >= 8 and leer_token(tmp_path) == t
-    monkeypatch.setenv("APUNTADOR_TOKEN", "fijo")
-    assert leer_token(tmp_path) == "fijo"
 
 
 class AppFalsa:
@@ -75,32 +67,27 @@ def servidor(tmp_path):
     puerto = s.getsockname()[1]
     s.close()
     app = AppFalsa()
-    web = ServidorWeb(app, puerto, "clave123", tmp_path)
+    web = ServidorWeb(app, puerto)
     web.iniciar()
     yield app, f"http://127.0.0.1:{puerto}"
     web.cerrar()
 
 
-def test_clave_y_acciones(servidor):
+def test_pagina_y_acciones(servidor):
     app, url = servidor
     r = requests.get(url + "/")
-    assert r.status_code == 401 and "Clave" in r.text
-    assert requests.post(url + "/accion/pausa").status_code == 401
-
-    ses = requests.Session()
-    r = ses.get(url + "/?t=clave123")  # deja la cookie y redirige a /
     assert r.status_code == 200 and "SUGERENCIA · OPENAI" in r.text
     for a in ("responder", "pausa", "limpiar", "recargar"):
-        assert ses.post(url + "/accion/" + a).status_code == 204
-    assert ses.post(url + "/accion/auto?v=0").status_code == 204
+        assert requests.post(url + "/accion/" + a).status_code == 204
+    assert requests.post(url + "/accion/auto?v=0").status_code == 204
     assert app.llamadas == ["responder", "pausa", "limpiar", "recargar", ("auto", False)]
-    assert ses.post(url + "/accion/borrar_todo").status_code == 404
+    assert requests.post(url + "/accion/borrar_todo").status_code == 404
 
 
 def test_sse_envia_foto_y_eventos(servidor):
     app, url = servidor
     app.ui_q.put(("trans", "¿Cuál es el OPEX?", True))
-    with requests.get(url + "/eventos?t=clave123", stream=True, timeout=5) as r:
+    with requests.get(url + "/eventos", stream=True, timeout=5) as r:
         assert r.headers["Content-Type"].startswith("text/event-stream")
         recibidos = []
         enviado = False
@@ -122,7 +109,6 @@ def test_sondeo_largo(servidor):
     app, url = servidor
     app.ui_q.put(("trans", "hola", False))
     ses = requests.Session()
-    ses.get(url + "/?t=clave123")
     d = ses.get(url + "/sondeo?desde=0", timeout=5).json()
     assert d["ev"][0] == ["reset"] and ["trans", "hola", False] in d["ev"]
     n = d["n"]
@@ -131,4 +117,3 @@ def test_sondeo_largo(servidor):
     t0 = time.time()
     d2 = ses.get(url + f"/sondeo?desde={n}", timeout=5).json()  # espera hasta que llega el token
     assert d2["ev"] == [["tok", "x"]] and d2["n"] == n + 1 and time.time() - t0 < 3
-    assert requests.get(url + "/sondeo?desde=0").status_code == 401

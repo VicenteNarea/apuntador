@@ -9,6 +9,5 @@ docs/*
 .claude/settings.local.json
 .env
 resultados_latencia/
-.web_token
 enlaces.txt
 servicio.log
