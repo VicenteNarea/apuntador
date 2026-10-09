@@ -78,3 +78,64 @@ def test_prompt_con_varias_preguntas(monkeypatch):
 
     mensajes, _ = a.respondedor._mensajes(["¿Cuál es el OPEX?"], [])
     assert "PREGUNTA QUE ME HICIERON:\n¿Cuál es el OPEX?" in mensajes[1]["content"]
+
+
+# ─────────────── alucinaciones de Whisper (casos reales de una llamada) ───────────────
+@pytest.mark.parametrize("texto", [
+    "x slot, X, SE, G across, x slot",
+    "FIX PLF, видео, interference, etc.",
+    "Q, Q, Q, Q, Q",
+    "字幕由 Amara.org 社区提供",
+])
+def test_alucinaciones_reales(texto):
+    assert A.es_alucinacion(texto)
+
+
+@pytest.mark.parametrize("texto", [
+    "su MLP sacó 90.24% y SVM 85.36% con 41 ejemplos",
+    "Eso es 37 aciertos contra 35",
+    "es mejor",
+    "y no que fue suerte.",
+    "Sí, ya lo vi, ok",
+    "Lo vimos en la U el 3 de mayo, a las 10",
+    "We use an API to do it in the PC",
+])
+def test_frases_normales_no_son_alucinacion(texto):
+    assert not A.es_alucinacion(texto)
+
+
+def test_segmento_valido():
+    from types import SimpleNamespace as S
+    assert A.segmento_valido(S(no_speech_prob=0.1, avg_logprob=-0.3, compression_ratio=1.4))
+    assert not A.segmento_valido(S(no_speech_prob=0.1, avg_logprob=-1.4, compression_ratio=1.4))  # inseguro
+    assert not A.segmento_valido(S(no_speech_prob=0.1, avg_logprob=-0.3, compression_ratio=3.0))  # repetitivo
+    assert not A.segmento_valido(S(no_speech_prob=0.9, avg_logprob=-0.3, compression_ratio=1.4))  # sin voz
+
+
+# ─────────────── pregunta cortada en varios pedazos por pausas ───────────────
+def _frase(app, texto, t_fin, dur):
+    app.on_texto(texto, t_fin, 100, dur)
+
+
+def test_pregunta_cortada_se_completa(app):
+    # caso de la llamada: la persona hace pausas cortas en medio de la pregunta
+    _frase(app, "Eso es 37 aciertos contra 35", 10.0, 2.5)
+    assert app.pedidos == []
+    _frase(app, "con tan pocos datos. ¿Cómo puede afirmar que MLP", 14.0, 3.0)
+    _frase(app, "es mejor", 15.6, 1.4)          # pausa ~1,1 s
+    _frase(app, "y no que fue suerte.", 17.4, 1.6)  # pausa ~1,1 s
+    assert app.pedidos[-1] == ["con tan pocos datos. ¿Cómo puede afirmar que MLP es mejor y no que fue suerte."]
+    assert len(app.pedidos) == 3  # se volvió a pedir con cada pedazo
+
+
+def test_pausa_larga_no_continua(app):
+    _frase(app, "¿Cuál es el OPEX?", 10.0, 2.0)
+    _frase(app, "Bueno, pasemos al siguiente punto", 20.0, 2.5)  # pausa de varios segundos
+    assert app.pedidos == [["¿Cuál es el OPEX?"]]
+
+
+def test_sin_auto_no_continua(app):
+    app.auto = False
+    _frase(app, "¿Cómo puede afirmar que MLP", 10.0, 2.0)
+    _frase(app, "es mejor", 11.5, 1.2)
+    assert app.pedidos == []

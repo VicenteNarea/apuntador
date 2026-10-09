@@ -25,6 +25,10 @@ Escucha lo que suena en tu PC (la voz de los demás en Meet, Teams o Zoom), lo t
 | Desactivar respuestas automáticas | casilla **Auto** |
 | Agregar documentos en caliente | cópialos a `docs/` y pulsa **Recargar docs** |
 
+**Preguntas con pausas:** si la persona hace una pausa corta en medio de la pregunta (menos de `CONTINUACION_S`), los pedazos que siguen se suman a la pregunta y la respuesta se vuelve a generar con la pregunta completa.
+
+**Texto basura de Whisper:** con ruido (teclado, música, notificaciones) Whisper puede inventar palabras, siglas o hasta otro alfabeto. Se filtra con el detector de voz Silero (`WHISPER_VAD`), la confianza de cada segmento (`WHISPER_MIN_LOGPROB`, `WHISPER_MAX_COMPRESION`) y reglas sobre el texto (otros alfabetos, letras sueltas repetidas). Si se pierden frases reales, baja la exigencia: `WHISPER_MIN_LOGPROB = -1.3`.
+
 **Varias preguntas a la vez:** si en una misma frase te hacen varias preguntas, o llegan seguidas (mientras se responde la anterior o con menos de `VENTANA_PREGUNTAS_S` segundos entre una y otra), se responden juntas, numeradas y en el mismo orden, hasta `MAX_PREGUNTAS`.
 
 Las preguntas detectadas aparecen en amarillo. Arriba se muestra la latencia real (STT y tiempo hasta la primera palabra).

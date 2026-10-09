@@ -39,6 +39,10 @@ IDIOMA = "es"
 # Términos propios mejoran la transcripción (siglas, nombres, lugares)
 # Se usan como "hotwords" (sesgo suave), no como texto previo: así Whisper no las repite en los silencios.
 PALABRAS_CLAVE = "MLP, SVM, Random Forest, TF-IDF, ERPNext, FastAPI, OPEX, CAPEX, accuracy, EPP"
+# Filtros contra alucinaciones (texto inventado cuando llega ruido en vez de voz)
+WHISPER_VAD = True                 # filtro de voz Silero de Whisper: descarta ruido, teclado, música
+WHISPER_MIN_LOGPROB = -1.0         # descarta segmentos en que Whisper está muy inseguro
+WHISPER_MAX_COMPRESION = 2.4       # descarta segmentos repetitivos ("Q, Q, Q, Q")
 
 # LLM local (Ollama)
 OLLAMA_URL = "http://127.0.0.1:11434/api/chat"  # no usar "localhost": en Windows intenta IPv6 primero y pierde ~2 s
@@ -69,6 +73,8 @@ MAX_FRASE_S = 20
 MIN_FRASE_S = 0.5
 VAD_AGRESIVIDAD = 2                # 0–3
 PREROLL_MS = 300
+CONTINUACION_S = 1.5               # una pausa menor que esto tras una pregunta = la pregunta sigue
+MAX_CONTINUACIONES = 3
 
 # Comportamiento
 RESPONDER_AUTOMATICO = True        # responde solo al detectar una pregunta
@@ -150,16 +156,39 @@ _ALUCINACIONES = ("gracias por ver", "suscribete", "amara.org", "subtitulos real
 _CLAVES = set(tokens(PALABRAS_CLAVE))
 
 
+# Alfabetos que no deberían aparecer en una llamada en español/inglés (cirílico, griego, árabe, CJK…)
+_OTRO_ALFABETO = re.compile(r"[\u0370-\u03ff\u0400-\u052f\u0590-\u06ff\u0900-\u0dff"
+                            r"\u0e00-\u0e7f\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af]")
+_CORTAS_OK = {"si", "ya", "ok", "eh", "ah", "oh", "va", "ve", "ha", "he", "vi", "fe", "id", "ia", "ti",
+              "bi", "pc", "it", "is", "in", "on", "of", "to", "be", "we", "us", "an", "at", "or", "as"}
+
+
 def es_alucinacion(texto: str) -> bool:
     n = normalizar(texto)
     if any(a in n for a in _ALUCINACIONES) or len(n.strip(" .,¡!")) < 2:
         return True
+    if _OTRO_ALFABETO.search(texto):
+        return True
+    palabras = re.findall(r"[a-z0-9]+", n)
+    # letras o palabras sueltas repetidas ("Q, Q, Q, Q") o sopa de siglas ("x slot, X, SE, G across")
+    if len(palabras) >= 4:
+        if len(set(palabras)) <= 2:
+            return True
+        raras = [w for w in palabras if len(w) <= 2 and not w.isdigit() and w not in _STOP and w not in _CORTAS_OK]
+        if len(raras) / len(palabras) >= 0.4:
+            return True
     t = tokens(texto)
     # Whisper repitiendo la lista de palabras clave en un silencio
     if t and _CLAVES and len(t) >= 3 and sum(w in _CLAVES for w in t) / len(t) >= 0.6:
         return True
     # frase con una misma palabra repetida en bucle ("gracias gracias gracias…")
     return len(t) >= 6 and len(set(t)) <= 2
+
+
+def segmento_valido(s) -> bool:
+    """Descarta segmentos de Whisper sin voz, de baja confianza o repetitivos."""
+    return (s.no_speech_prob < 0.6 and s.avg_logprob > WHISPER_MIN_LOGPROB
+            and s.compression_ratio < WHISPER_MAX_COMPRESION)
 
 
 # ─────────────────────────── documentos (RAG BM25) ───────────────────────────
@@ -468,12 +497,12 @@ class Transcriptor(threading.Thread):
         silencio = np.zeros(16000, dtype=np.float32)
         try:
             m = WhisperModel(WHISPER_MODEL, device="cuda", compute_type=WHISPER_COMPUTE)
-            list(m.transcribe(silencio, language=IDIOMA)[0])  # fuerza carga de cuBLAS/cuDNN
+            list(m.transcribe(silencio, language=IDIOMA, vad_filter=WHISPER_VAD)[0])  # carga cuBLAS/cuDNN y Silero
             return m, f"{WHISPER_MODEL} · GPU"
         except Exception as e:
             print(f"[whisper] CUDA no disponible ({e}). Usando CPU con modelo 'small'.")
             m = WhisperModel("small", device="cpu", compute_type="int8")
-            list(m.transcribe(silencio, language=IDIOMA)[0])
+            list(m.transcribe(silencio, language=IDIOMA, vad_filter=WHISPER_VAD)[0])
             return m, "small · CPU (⚠ revisa CUDA)"
 
     def run(self):
@@ -489,15 +518,15 @@ class Transcriptor(threading.Thread):
             t0 = time.perf_counter()
             try:
                 segs, _ = self.model.transcribe(
-                    audio, language=IDIOMA, beam_size=1, vad_filter=False,
+                    audio, language=IDIOMA, beam_size=1, vad_filter=WHISPER_VAD,
                     condition_on_previous_text=False, without_timestamps=True,
                     hotwords=PALABRAS_CLAVE or None)
-                texto = " ".join(s.text.strip() for s in segs if s.no_speech_prob < 0.6).strip()
+                texto = " ".join(s.text.strip() for s in segs if segmento_valido(s)).strip()
             except Exception as e:
                 print(f"[whisper] {e}")
                 continue
             if texto and not es_alucinacion(texto):
-                self.app.on_texto(texto, t_fin, (time.perf_counter() - t0) * 1000)
+                self.app.on_texto(texto, t_fin, (time.perf_counter() - t0) * 1000, len(audio) / 16000)
 
 
 # ─────────────────────────── LLM (Ollama) ───────────────────────────
@@ -668,6 +697,8 @@ class App:
         self.enlaces = []
         self.preguntas = []          # preguntas que se están respondiendo juntas
         self.t_ult_preg = -1e9
+        self.t_fin_preg = None       # fin (perf_counter) del último pedazo de pregunta
+        self.n_cont = 0
         self.ui_q.put(("auto", self.auto))
         if GUARDAR_TRANSCRIPCION:
             (BASE / "transcripciones").mkdir(exist_ok=True)
@@ -677,7 +708,7 @@ class App:
     def estado(self, s):
         self.ui_q.put(("estado", s))
 
-    def on_texto(self, texto, t_fin, stt_ms):
+    def on_texto(self, texto, t_fin, stt_ms, dur=None):
         self.historial.append(texto)
         preg = es_pregunta(texto)
         self.ui_q.put(("trans", texto, preg))
@@ -685,8 +716,28 @@ class App:
         if self.log:
             with open(self.log, "a", encoding="utf-8") as f:
                 f.write(f"[{datetime.now():%H:%M:%S}] {texto}\n")
-        if preg and self.auto and not self.pausado:
-            self.encolar_pregunta(texto, t_fin)
+        if self.auto and not self.pausado:
+            if preg:
+                self.encolar_pregunta(texto, t_fin)
+                self.t_fin_preg, self.n_cont = t_fin, 0
+            elif self._es_continuacion(t_fin, dur):
+                self.continuar_pregunta(texto, t_fin)
+
+    def _es_continuacion(self, t_fin, dur) -> bool:
+        """¿Este pedazo sigue a una pregunta tras una pausa corta? ("¿cómo afirma que MLP" … "es mejor")"""
+        if self.t_fin_preg is None or not self.preguntas or self.n_cont >= MAX_CONTINUACIONES:
+            return False
+        # t_fin = fin de la voz + SILENCIO_MS; el audio incluye PREROLL_MS antes de la voz
+        inicio_voz = t_fin - (dur or 0) + PREROLL_MS / 1000
+        fin_voz_anterior = self.t_fin_preg - SILENCIO_MS / 1000
+        return inicio_voz - fin_voz_anterior < CONTINUACION_S
+
+    def continuar_pregunta(self, texto, t_ref=None):
+        self.preguntas[-1] = f"{self.preguntas[-1]} {texto}"
+        self.n_cont += 1
+        self.t_fin_preg = t_ref
+        self.t_ult_preg = time.monotonic()
+        self.respondedor.solicitar(self.preguntas, list(self.historial), t_ref or time.perf_counter())
 
     def encolar_pregunta(self, texto, t_ref=None):
         """Si la pregunta llega mientras se responde la anterior (o muy seguida), se suma a ella
