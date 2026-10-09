@@ -57,6 +57,12 @@ El panel web muestra lo mismo que la ventana: transcripción, sugerencia local, 
 | Qwen 2.5 7B, primera palabra | 0,2–0,5 s |
 | **Total hasta ver la respuesta** | **~1–1,6 s** |
 
+## PC sin tarjeta NVIDIA (AMD, Intel)
+Funciona igual, pero Whisper corre en el procesador: faster-whisper solo acelera con NVIDIA (CUDA). El programa lo detecta solo y usa `WHISPER_MODEL_CPU` (por defecto `small`), sin perder tiempo intentando CUDA. El diagnóstico lo muestra como **AVISO**, no como falla.
+
+- Transcripción más lenta que en GPU: con un procesador moderno, ~0,5–1,5 s por frase con `small`. Si se siente lenta, usa `WHISPER_MODEL_CPU = "base"`; si el procesador es potente y quieres más precisión, `"medium"`.
+- Ollama tiene su propio soporte para tarjetas AMD (Radeon RX 6000/7000 en Windows). Si la tarjeta no es compatible, usa el procesador y responde más lento.
+
 ## VRAM (8 GB)
 Whisper turbo int8 (~1,5 GB) + Qwen 2.5 7B Q4 con contexto de 4k (~5,2 GB) ≈ **6,7 GB**. Si aparece un error de memoria o Ollama se vuelve lento, en `asistente_llamadas.py` cambia:
 - `LLM_MODEL = "qwen2.5:3b"` (y ejecuta `ollama pull qwen2.5:3b`), o

@@ -15,11 +15,17 @@ import asistente_llamadas as A  # noqa: E402
 RES = []
 
 
+class Aviso(Exception):
+    """No es una falla: el equipo funciona, pero con una limitación (p. ej., sin NVIDIA)."""
+
+
 def check(nombre, fn):
     t0 = time.perf_counter()
     try:
         detalle = fn() or ""
         RES.append(("OK", nombre, detalle, time.perf_counter() - t0))
+    except Aviso as e:
+        RES.append(("AVISO", nombre, str(e), time.perf_counter() - t0))
     except Exception as e:
         RES.append(("FALLA", nombre, f"{type(e).__name__}: {e}", time.perf_counter() - t0))
 
@@ -46,14 +52,33 @@ def dependencias():
 
 
 def vram():
+    if not A.hay_gpu_nvidia():
+        raise Aviso("sin tarjeta NVIDIA (AMD/Intel): Whisper usa el procesador; Ollama usa su propio soporte")
     out = subprocess.check_output(
         ["nvidia-smi", "--query-gpu=name,memory.used,memory.total,driver_version",
          "--format=csv,noheader"], text=True).strip()
     return out
 
 
+def whisper_cpu():
+    import numpy as np
+    from faster_whisper import WhisperModel
+    t0 = time.perf_counter()
+    m = WhisperModel(A.WHISPER_MODEL_CPU, device="cpu", compute_type="int8", cpu_threads=A.hilos_cpu())
+    carga = time.perf_counter() - t0
+    audio = np.zeros(16000 * 3, dtype=np.float32)
+    list(m.transcribe(audio, language=A.IDIOMA)[0])
+    t1 = time.perf_counter()
+    list(m.transcribe(audio, language=A.IDIOMA, beam_size=1)[0])
+    ms = (time.perf_counter() - t1) * 1000
+    return (f"{A.WHISPER_MODEL_CPU} en CPU ({A.hilos_cpu()} hilos) · carga {carga:.1f} s · "
+            f"3 s de audio en {ms:.0f} ms")
+
+
 def whisper_gpu():
     import numpy as np
+    if not A.whisper_en_gpu():
+        return whisper_cpu()
     A._registrar_dlls_cuda()
     from faster_whisper import WhisperModel
     t0 = time.perf_counter()
@@ -126,7 +151,7 @@ if __name__ == "__main__":
     check("Python", python_ver)
     check("Dependencias", dependencias)
     check("GPU / VRAM (nvidia-smi)", vram)
-    check("Whisper en CUDA", whisper_gpu)
+    check("Whisper (GPU o CPU)", whisper_gpu)
     check("Ollama", ollama)
     check("Documentos (docs/)", documentos)
     if "--audio" in sys.argv:
@@ -138,5 +163,6 @@ if __name__ == "__main__":
     for estado, nombre, detalle, t in RES:
         print(f"[{estado:5}] {nombre:<{ancho}}  {detalle}  ({t:.1f} s)")
     fallas = sum(r[0] == "FALLA" for r in RES)
-    print(f"\n{len(RES) - fallas}/{len(RES)} OK")
+    avisos = sum(r[0] == "AVISO" for r in RES)
+    print(f"\n{len(RES) - fallas - avisos}/{len(RES)} OK" + (f" · {avisos} aviso(s)" if avisos else ""))
     sys.exit(1 if fallas else 0)

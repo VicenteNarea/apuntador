@@ -160,3 +160,15 @@ def test_vineta_con_asterisco_se_conserva():
 def test_instrucciones_no_son_plantilla():
     # el modelo local copiaba "1) <tema>" con viñetas vacías: la regla no debe traer marcadores para rellenar
     assert "<tema" not in A.SISTEMA and "esquema" in A.SISTEMA and "**" in A.SISTEMA
+
+
+# ─────────────── equipos sin NVIDIA (AMD/Intel) ───────────────
+def test_dispositivo_whisper(monkeypatch):
+    monkeypatch.setattr(A, "hay_gpu_nvidia", lambda: False)
+    monkeypatch.setattr(A, "WHISPER_DISPOSITIVO", "auto")
+    assert A.whisper_en_gpu() is False          # AMD: directo a CPU, sin intentar CUDA
+    monkeypatch.setattr(A, "hay_gpu_nvidia", lambda: True)
+    assert A.whisper_en_gpu() is True
+    monkeypatch.setattr(A, "WHISPER_DISPOSITIVO", "cpu")
+    assert A.whisper_en_gpu() is False          # forzar CPU aunque haya NVIDIA
+    assert 2 <= A.hilos_cpu() <= 8

@@ -35,6 +35,10 @@ BASE = Path(__file__).resolve().parent
 # Transcripción (Whisper en GPU)
 WHISPER_MODEL = "large-v3-turbo"   # más rápido: "small" · intermedio: "medium"
 WHISPER_COMPUTE = "int8_float16"   # ~1,5 GB VRAM con large-v3-turbo
+# Sin tarjeta NVIDIA (AMD, Intel o sin gráfica) Whisper corre en el procesador
+WHISPER_DISPOSITIVO = "auto"       # "auto" (NVIDIA si hay, si no CPU) · "cuda" · "cpu"
+WHISPER_MODEL_CPU = "small"        # en CPU: "base" = más rápido · "small" = equilibrio · "medium" = CPU potente
+WHISPER_CPU_HILOS = 0              # 0 = automático
 IDIOMA = "es"
 # Términos propios mejoran la transcripción (siglas, nombres, lugares)
 # Se usan como "hotwords" (sesgo suave), no como texto previo: así Whisper no las repite en los silencios.
@@ -377,6 +381,28 @@ class BaseConocimiento:
 
 
 # ─────────────────────────── audio ───────────────────────────
+def hay_gpu_nvidia() -> bool:
+    """Detecta rápido si hay una tarjeta NVIDIA utilizable (evita ~40 s de intento fallido con AMD)."""
+    import shutil
+    if os.name == "nt" and not shutil.which("nvidia-smi"):
+        return False
+    try:
+        import ctranslate2
+        return ctranslate2.get_cuda_device_count() > 0
+    except Exception:
+        return False
+
+
+def whisper_en_gpu() -> bool:
+    if WHISPER_DISPOSITIVO == "cpu":
+        return False
+    return WHISPER_DISPOSITIVO == "cuda" or hay_gpu_nvidia()
+
+
+def hilos_cpu() -> int:
+    return WHISPER_CPU_HILOS or max(2, min(8, (os.cpu_count() or 4) - 2))
+
+
 def _registrar_dlls_cuda():
     """Hace visibles cuBLAS/cuDNN instalados por pip (nvidia-*-cu12) en Windows."""
     if os.name != "nt":
@@ -514,21 +540,25 @@ class Transcriptor(threading.Thread):
         self.desc = ""
 
     def _cargar(self):
-        _registrar_dlls_cuda()
         from faster_whisper import WhisperModel
         silencio = np.zeros(16000, dtype=np.float32)
-        try:
-            m = WhisperModel(WHISPER_MODEL, device="cuda", compute_type=WHISPER_COMPUTE)
-            list(m.transcribe(silencio, language=IDIOMA, vad_filter=WHISPER_VAD)[0])  # carga cuBLAS/cuDNN y Silero
-            return m, f"{WHISPER_MODEL} · GPU"
-        except Exception as e:
-            print(f"[whisper] CUDA no disponible ({e}). Usando CPU con modelo 'small'.")
-            m = WhisperModel("small", device="cpu", compute_type="int8")
-            list(m.transcribe(silencio, language=IDIOMA, vad_filter=WHISPER_VAD)[0])
-            return m, "small · CPU (⚠ revisa CUDA)"
+        aviso = ""
+        if whisper_en_gpu():
+            _registrar_dlls_cuda()
+            try:
+                m = WhisperModel(WHISPER_MODEL, device="cuda", compute_type=WHISPER_COMPUTE)
+                list(m.transcribe(silencio, language=IDIOMA, vad_filter=WHISPER_VAD)[0])  # carga cuBLAS/cuDNN y Silero
+                return m, f"{WHISPER_MODEL} · GPU"
+            except Exception as e:
+                print(f"[whisper] CUDA no disponible ({e}). Usando CPU.")
+                aviso = " (⚠ revisa CUDA)"
+        m = WhisperModel(WHISPER_MODEL_CPU, device="cpu", compute_type="int8", cpu_threads=hilos_cpu())
+        list(m.transcribe(silencio, language=IDIOMA, vad_filter=WHISPER_VAD)[0])
+        return m, f"{WHISPER_MODEL_CPU} · CPU{aviso}"
 
     def run(self):
-        self.app.estado(f"Cargando Whisper {WHISPER_MODEL} (la 1ª vez descarga ~1,6 GB)…")
+        modelo = WHISPER_MODEL if whisper_en_gpu() else f"{WHISPER_MODEL_CPU} en CPU"
+        self.app.estado(f"Cargando Whisper {modelo} (la 1ª vez se descarga)…")
         try:
             self.model, self.desc = self._cargar()
         except Exception as e:
